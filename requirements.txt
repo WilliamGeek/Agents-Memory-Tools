@@ -1,0 +1,5 @@
+# Memory Tools core dependencies
+session-migrate>=0.11.0
+tiktoken>=0.7.0
+tokenizers>=0.19.0
+

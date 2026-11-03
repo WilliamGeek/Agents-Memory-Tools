@@ -1,0 +1,26 @@
+# Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.bak
+*.bak[0-9]*
+
+# Runtime & Local Data
+exports/
+tiktoken_cache/
+token_cache.json
+*.db
+*.db-journal
+*.sqlite3
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
