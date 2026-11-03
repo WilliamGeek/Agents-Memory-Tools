@@ -14,6 +14,7 @@ import shutil
 import tempfile
 import urllib.parse
 import re
+from html import unescape as _html_unescape
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 class ReusableThreadingServer(ThreadingHTTPServer):
@@ -490,6 +491,469 @@ def extract_claude_title_and_date(jsonl_path: Path) -> tuple[str, str]:
         title = jsonl_path.stem
     return title, date_str
 
+# ---------------------------------------------------------------------------
+# WorkBuddy 记录清洗
+# ---------------------------------------------------------------------------
+# WorkBuddy 会把大量「非用户输入」写进 role=user 的记录里：注入式
+# <system-reminder>（环境信息、SOUL/IDENTITY/USER 身份文件、当前时间、记忆提醒）、
+# 后台任务回执 <task-notification>、上下文压缩快照 <conversation_history_summary>。
+# 若原样当成「用户指令」渲染，卡片里就是一整屏系统提示词，真实提问被埋没。
+# 下面把真正的 <user_query> 抽出来，其余降级为「系统通知」事件。
+_WB_SYS_REMINDER_RE = re.compile(r"<system-reminder\b[^>]*>.*?</system-reminder>", re.S | re.I)
+_WB_TASK_NOTIF_RE = re.compile(r"<task-notification\b[^>]*>.*?</task-notification>", re.S | re.I)
+_WB_HISTORY_SUMMARY_RE = re.compile(r"<conversation_history_summary\b[^>]*>.*?</conversation_history_summary>", re.S | re.I)
+_WB_QUERY_RE = re.compile(r"<user_query\s*>(.*?)</user_query\s*>", re.S | re.I)
+_WB_SYS_NOTE_RE = re.compile(r"^\[SYSTEM NOTIFICATION - NOT USER INPUT\][^\n]*$", re.I | re.M)
+_WB_TASKOUT_HINT_RE = re.compile(r"^Use the TaskOutput tool[^\n]*$", re.I | re.M)
+_WB_LONG_QUOTE_OPEN_RE = re.compile(r"</?long_text_quote\b[^>]*>", re.I)
+_WB_CONTINUE_HINT = "please continue with the conversation based on the summarized context above"
+
+
+class _WbCharCounter:
+    """按正则删除片段并累计被删字符数。"""
+
+    def __init__(self) -> None:
+        self.removed = 0
+
+    def sub(self, pattern: re.Pattern[str], text: str) -> str:
+        def _drop(match: re.Match[str]) -> str:
+            self.removed += len(match.group(0))
+            return ""
+
+        return pattern.sub(_drop, text)
+
+
+def _wb_content_text(record: dict[str, Any]) -> str:
+    """取出 WorkBuddy 记录的正文（content 可能是 str，也可能是 [{type,text}] 列表）。"""
+    content = record.get("content")
+    if content is None:
+        message = record.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                piece = item.get("text")
+                if isinstance(piece, str) and piece:
+                    parts.append(piece)
+        return "\n".join(parts)
+    fallback = record.get("text")
+    return fallback if isinstance(fallback, str) else ""
+
+
+def _wb_tidy_visible(text: str) -> str:
+    """去掉展示层无意义的包裹标签与多余空行，正文保持原样。"""
+    if not text:
+        return ""
+    text = _WB_LONG_QUOTE_OPEN_RE.sub("", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def classify_workbuddy_user_record(record: dict[str, Any]) -> dict[str, Any]:
+    """把 role=user 的记录拆成「真实用户指令」或「系统通知」。
+
+    返回 kind: user / notice / skip，附带可见正文、原文与被过滤字数。
+    """
+    raw = _html_unescape(_wb_content_text(record).strip())
+    provider = record.get("providerData")
+    is_meta = bool(provider.get("isMeta")) if isinstance(provider, dict) else False
+    if not raw:
+        return {"kind": "skip", "text": "", "raw": "", "hidden": 0, "label": ""}
+
+    lowered = raw.lower()
+
+    # 1. 含 <user_query>：只保留用户真正敲进去的正文
+    if _WB_QUERY_RE.search(raw):
+        queries = [m.group(1).strip() for m in _WB_QUERY_RE.finditer(raw)]
+        visible = "\n\n".join(q for q in queries if q)
+        counter = _WbCharCounter()
+        residue = raw
+        for pattern in (_WB_SYS_REMINDER_RE, _WB_TASK_NOTIF_RE, _WB_HISTORY_SUMMARY_RE, _WB_SYS_NOTE_RE):
+            residue = counter.sub(pattern, residue)
+        residue = _WB_QUERY_RE.sub("", residue)
+        residue = _wb_tidy_visible(residue)
+        # <user_query> 之外的正文（附件、截图路径等）仍然属于用户输入，一并保留
+        if residue:
+            visible = f"{visible}\n\n{residue}".strip() if visible else residue
+        visible = _wb_tidy_visible(visible)
+        if not visible:
+            return {"kind": "skip", "text": "", "raw": raw, "hidden": len(raw), "label": ""}
+        return {
+            "kind": "user",
+            "text": visible,
+            "raw": raw,
+            "hidden": max(len(raw) - len(visible), 0),
+            "label": "",
+        }
+
+    # 2. 上下文压缩快照：属于会话内部状态，不是用户发言
+    if "<conversation_history_summary" in lowered:
+        summary = _WB_HISTORY_SUMMARY_RE.search(raw)
+        body = _wb_tidy_visible(summary.group(0)) if summary else _wb_tidy_visible(raw)
+        label = "上下文压缩快照"
+        return {"kind": "notice", "text": body or raw, "raw": raw, "hidden": 0, "label": label}
+
+    # 3. 后台任务回执 / 自动续写指令：均由系统代发
+    if is_meta or "<task-notification" in lowered:
+        notif = re.search(r"<task-notification\b[^>]*>(.*?)</task-notification>", raw, re.S | re.I)
+        if notif:
+            inner = notif.group(1)
+            task_id = re.search(r"<task-id>(.*?)</task-id>", inner, re.S | re.I)
+            status = re.search(r"<status>(.*?)</status>", inner, re.S | re.I)
+            summary = re.search(r"<summary>(.*?)</summary>", inner, re.S | re.I)
+            if summary:
+                head = "任务 " + (task_id.group(1).strip() if task_id else "—")
+                if status and status.group(1).strip():
+                    head += " · " + status.group(1).strip()
+                body = head + "\n" + summary.group(1).strip()
+            else:
+                lines = []
+                for text_line in inner.splitlines():
+                    plain = re.sub(r"<[^>]+>", "", text_line).strip()
+                    if plain:
+                        lines.append(plain)
+                body = "\n".join(lines).strip()
+        else:
+            counter = _WbCharCounter()
+            cleaned = raw
+            for pattern in (_WB_SYS_REMINDER_RE, _WB_TASK_NOTIF_RE, _WB_SYS_NOTE_RE, _WB_TASKOUT_HINT_RE):
+                cleaned = counter.sub(pattern, cleaned)
+            body = _wb_tidy_visible(cleaned) or _wb_tidy_visible(raw)
+        return {"kind": "notice", "text": body, "raw": raw, "hidden": 0, "label": "后台任务回执"}
+
+    if _WB_CONTINUE_HINT in lowered:
+        return {"kind": "notice", "text": raw, "raw": raw, "hidden": 0, "label": "自动续写指令"}
+
+    # 4. 纯 system-reminder 包裹（无 user_query）：整条丢弃，避免污染指令流
+    counter = _WbCharCounter()
+    cleaned = raw
+    for pattern in (_WB_SYS_REMINDER_RE, _WB_SYS_NOTE_RE):
+        cleaned = counter.sub(pattern, cleaned)
+    cleaned = _wb_tidy_visible(cleaned)
+    if not cleaned:
+        return {"kind": "skip", "text": "", "raw": raw, "hidden": len(raw), "label": ""}
+    return {"kind": "user", "text": cleaned, "raw": raw, "hidden": max(len(raw) - len(cleaned), 0), "label": ""}
+
+
+def _wb_reasoning_text(record: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("rawContent", "content"):
+        items = record.get(key)
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict):
+                    piece = item.get("text")
+                    if isinstance(piece, str) and piece.strip():
+                        parts.append(piece.strip())
+    return "\n\n".join(parts)
+
+
+def _wb_tool_output_text(record: dict[str, Any]) -> str:
+    output = record.get("output")
+    if isinstance(output, dict):
+        for key in ("text", "content", "output"):
+            piece = output.get(key)
+            if isinstance(piece, str) and piece.strip():
+                return piece
+        try:
+            return json.dumps(output, ensure_ascii=False, indent=2)
+        except Exception:
+            return str(output)
+    if isinstance(output, str):
+        return output
+    return ""
+
+
+def get_workbuddy_session_events(jsonl_path: Path) -> list[dict[str, Any]]:
+    """把 WorkBuddy 的 jsonl 还原成对话流事件。
+
+    事件类型：message(user/assistant) / notice / thinking / tool_call / tool_result。
+    user 事件只保留真实用户提问，raw_text 保留完整原文供追溯。
+    """
+    events: list[dict[str, Any]] = []
+    with open(jsonl_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except Exception:
+                continue
+
+            rtype = record.get("type")
+            timestamp = str(record.get("timestamp", ""))
+
+            if rtype == "message":
+                role = record.get("role") or "assistant"
+                if role == "user":
+                    classified = classify_workbuddy_user_record(record)
+                    if classified["kind"] == "user":
+                        paste_hint = _pasted_payload_hint(classified["text"])
+                        events.append({
+                            "kind": "message",
+                            "role": "user",
+                            "timestamp": timestamp,
+                            "text": classified["text"],
+                            "raw_text": classified["raw"] if classified["hidden"] > 0 else "",
+                            "hidden_chars": classified["hidden"],
+                            "collapsed": bool(paste_hint),
+                            "summary": paste_hint,
+                            "tool_name": "",
+                            "payload": None,
+                        })
+                    elif classified["kind"] == "notice":
+                        events.append({
+                            "kind": "notice",
+                            "role": "system",
+                            "timestamp": timestamp,
+                            "text": classified["text"],
+                            "raw_text": "",
+                            "hidden_chars": 0,
+                            "label": classified["label"],
+                            "tool_name": "",
+                            "payload": None,
+                        })
+                else:
+                    text = _wb_content_text(record).strip()
+                    if text:
+                        events.append({
+                            "kind": "message",
+                            "role": "assistant",
+                            "timestamp": timestamp,
+                            "text": text,
+                            "raw_text": "",
+                            "hidden_chars": 0,
+                            "tool_name": "",
+                            "payload": None,
+                        })
+
+            elif rtype == "reasoning":
+                text = _wb_reasoning_text(record)
+                if text:
+                    events.append({
+                        "kind": "thinking",
+                        "role": "assistant",
+                        "timestamp": timestamp,
+                        "text": text,
+                        "tool_name": "",
+                        "payload": None,
+                    })
+
+            elif rtype == "function_call":
+                tool_name = str(record.get("name") or "tool")
+                arguments = record.get("arguments")
+                parsed_args: Any = arguments
+                if isinstance(arguments, str):
+                    try:
+                        parsed_args = json.loads(arguments)
+                    except Exception:
+                        parsed_args = arguments
+                if isinstance(parsed_args, (dict, list)):
+                    try:
+                        detail = json.dumps(parsed_args, ensure_ascii=False, indent=2)
+                    except Exception:
+                        detail = str(parsed_args)
+                else:
+                    detail = str(parsed_args or "")
+                events.append({
+                    "kind": "tool_call",
+                    "role": "assistant",
+                    "timestamp": timestamp,
+                    "text": detail,
+                    "tool_name": tool_name,
+                    "payload": {"input": parsed_args if isinstance(parsed_args, dict) else {}},
+                    "call_id": str(record.get("callId") or ""),
+                    "status": "",
+                })
+
+            elif rtype == "function_call_result":
+                text = _wb_tool_output_text(record).strip()
+                events.append({
+                    "kind": "tool_result",
+                    "role": "tool",
+                    "timestamp": timestamp,
+                    "text": text,
+                    "tool_name": str(record.get("name") or "tool"),
+                    "payload": None,
+                    "call_id": str(record.get("callId") or ""),
+                    "status": str(record.get("status") or ""),
+                })
+
+    return events
+
+
+# ---------------------------------------------------------------------------
+# 通用会话事件清洗（Claude / Antigravity / Trae / Cursor / Codex …）
+# ---------------------------------------------------------------------------
+# 除 WorkBuddy 外，其它客户端的 role=user 记录同样混着非用户内容：
+#   Claude Code   —— <command-name>/model</command-name>、<local-command-stdout> 等斜杠命令包裹
+#   Antigravity   —— 续接历史时把 "Listed directory … Viewed …" 工具动作摘要塞进用户轮
+#   Cursor/Codex  —— <user_info> / <environment_context> 环境注入
+# 统一在这里剥离，用户指令只留人真正敲进去的话。
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_UNIV_SYS_BLOCK_RES = (
+    re.compile(r"<system-reminder\b[^>]*>.*?</system-reminder>", re.S | re.I),
+    re.compile(r"<user_info\b[^>]*>.*?</user_info>", re.S | re.I),
+    re.compile(r"<environment_context\b[^>]*>.*?</environment_context>", re.S | re.I),
+    re.compile(r"<conversation_history_summary\b[^>]*>.*?</conversation_history_summary>", re.S | re.I),
+    re.compile(r"<task-notification\b[^>]*>.*?</task-notification>", re.S | re.I),
+)
+_UNIV_CAVEAT_RE = re.compile(
+    r"Caveat: The messages below were generated by the user while running local commands\.[^\n]*", re.I
+)
+_CLI_CMD_NAME_RE = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.S | re.I)
+_CLI_CMD_ARGS_RE = re.compile(r"<command-args>\s*(.*?)\s*</command-args>", re.S | re.I)
+_CLI_OUTPUT_RE = re.compile(r"<local-command-(stdout|stderr)>\s*(.*?)\s*</local-command-\1>", re.S | re.I)
+_CLI_CMD_BLOCK_RE = re.compile(r"<command-(name|message|args)\b[^>]*>.*?</command-\1>", re.S | re.I)
+_TOOL_LOG_LINE_RE = re.compile(
+    r"^(?:Listed directory|Listed files|Viewed |Read file|Searched for|Searched |Ran command|Ran |"
+    r"Created file|Edited file|Wrote |Deleted |Executed |Checked |Updated )"
+)
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", text or "")
+
+
+_PASTE_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|/)[^\n]*\.(?:json|jsonl|ya?ml|toml|csv|tsv|log|md|txt|py|ts|tsx|js|jsx|ini|conf|cfg)$", re.I)
+
+
+def _pasted_payload_hint(text: str) -> str:
+    """识别「问题 + 整份文件内容」型长消息，返回折叠用的摘要标题。"""
+    if len(text) < 900:
+        return ""
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) < 10:
+        return ""
+    first = lines[0].strip()
+    if first.startswith("{") or first.startswith("["):
+        return "粘贴内容 · 结构化数据"
+    if _PASTE_PATH_RE.match(first):
+        return "粘贴内容 · " + first[:70]
+    return ""
+
+
+def _cli_command_notice(text: str) -> str:
+    """把 Claude Code 的斜杠命令包裹翻译成人话，返回通知正文。"""
+    parts: list[str] = []
+    args_map: list[str] = _CLI_CMD_ARGS_RE.findall(text)
+    names: list[str] = _CLI_CMD_NAME_RE.findall(text)
+    for index, name in enumerate(names):
+        cmd = name.strip()
+        if not cmd:
+            continue
+        arg_text = args_map[index].strip() if index < len(args_map) else ""
+        parts.append("执行命令 " + cmd + ("（参数：" + arg_text + "）" if arg_text else ""))
+    for stream, body in _CLI_OUTPUT_RE.findall(text):
+        body = _strip_ansi(body).strip()
+        if body:
+            parts.append(("命令输出：" if stream.lower() == "stdout" else "命令错误输出：") + body)
+    residue = _CLI_CMD_BLOCK_RE.sub("", text)
+    residue = _CLI_OUTPUT_RE.sub("", residue)
+    residue = _wb_tidy_visible(residue)
+    if residue:
+        parts.append(residue)
+    return "\n".join(parts)
+
+
+def _split_tool_log_prefix(text: str) -> tuple[str, str]:
+    """拆出 Antigravity 续接历史时混进用户轮的「工具动作摘要」前缀。"""
+    lines = text.splitlines()
+    cursor = 0
+    hits = 0
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _TOOL_LOG_LINE_RE.match(stripped):
+            hits += 1
+            cursor = index + 1
+            continue
+        break
+    if hits >= 3:
+        return "\n".join(lines[:cursor]).strip(), "\n".join(lines[cursor:]).strip()
+    return "", text.strip()
+
+
+def sanitize_session_events(events: list[dict[str, Any]], fmt: str = "") -> list[dict[str, Any]]:
+    """统一清洗各平台事件：用户轮只保留真实输入，其余降级为系统通知。"""
+    cleaned_events: list[dict[str, Any]] = []
+    for original in events or []:
+        event = dict(original)
+        if event.get("text"):
+            event["text"] = _strip_ansi(event["text"])
+
+        if event.get("kind") != "message" or event.get("role") != "user":
+            cleaned_events.append(event)
+            continue
+
+        raw = (event.get("text") or "").strip()
+        if not raw:
+            continue
+
+        # 1) 整条就是 CLI 斜杠命令或其输出
+        if raw.startswith("<command-name>") or raw.startswith("<local-command-"):
+            cleaned_events.append({
+                "kind": "notice",
+                "role": "system",
+                "timestamp": event.get("timestamp", ""),
+                "text": _cli_command_notice(raw) or raw,
+                "raw_text": raw,
+                "hidden_chars": 0,
+                "label": "CLI 命令",
+                "tool_name": "",
+                "payload": None,
+            })
+            continue
+
+        # 2) 内联系统注入块
+        counter = _WbCharCounter()
+        body = raw
+        for pattern in _UNIV_SYS_BLOCK_RES:
+            body = counter.sub(pattern, body)
+        body = counter.sub(_UNIV_CAVEAT_RE, body)
+
+        # 3) 工具动作摘要前缀（Antigravity 续接历史）
+        prefix, remainder = _split_tool_log_prefix(body)
+        if prefix:
+            cleaned_events.append({
+                "kind": "notice",
+                "role": "system",
+                "timestamp": event.get("timestamp", ""),
+                "text": prefix,
+                "raw_text": "",
+                "hidden_chars": 0,
+                "label": "工具动作摘要",
+                "tool_name": "",
+                "payload": None,
+            })
+            body = remainder
+
+        body = _wb_tidy_visible(body)
+        if not body:
+            continue
+
+        removed = max(len(raw) - len(body), 0)
+        event["text"] = body
+        event["raw_text"] = raw if removed else ""
+        event["hidden_chars"] = removed
+        paste_hint = _pasted_payload_hint(body)
+        if paste_hint:
+            # 用户自己贴了一整份文件：仍然算用户指令，但默认折叠，避免刷屏
+            event["collapsed"] = True
+            event["summary"] = paste_hint
+        cleaned_events.append(event)
+    return cleaned_events
+
+
 def get_workbuddy_sessions() -> list[dict[str, Any]]:
     wb_dir = Path(r"C:\Users\HP\.workbuddy")
     db_path = wb_dir / "workbuddy.db"
@@ -532,11 +996,15 @@ def get_workbuddy_sessions() -> list[dict[str, Any]]:
                     with open(j, "r", encoding="utf-8", errors="ignore") as f:
                         for line in f:
                             data = json.loads(line)
-                            if data.get("role") == "user" and data.get("content"):
-                                c = data["content"]
-                                if isinstance(c, list) and c and isinstance(c[0], dict) and c[0].get("text"):
-                                    raw_title = c[0]["text"].strip().splitlines()[0][:60]
-                                    break
+                            if data.get("type") != "message" or data.get("role") != "user":
+                                continue
+                            classified = classify_workbuddy_user_record(data)
+                            if classified["kind"] != "user":
+                                continue
+                            first_line = classified["text"].strip().splitlines()
+                            if first_line and first_line[0].strip():
+                                raw_title = first_line[0].strip()[:60]
+                                break
                 except:
                     pass
             if not raw_title:
@@ -968,16 +1436,24 @@ def get_trae_session_messages(session_match: dict[str, Any]) -> list[dict[str, A
                             res_list = data.get("response", {}).get("resp", {}).get("result", []) or data.get("response", {}).get("result", [])
                             if res_list and isinstance(res_list, list):
                                 for item in res_list:
-                                    txt = item.get("text", "").strip()
-                                    if txt:
-                                        events.append({
-                                            "kind": "message",
-                                            "role": "user" if len(events) % 2 == 0 else "assistant",
-                                            "timestamp": "",
-                                            "text": txt,
-                                            "tool_name": "",
-                                            "payload": None,
-                                        })
+                                    txt = (item.get("text") or "").strip()
+                                    if not txt:
+                                        continue
+                                    # 角色必须来自数据本身，不能靠奇偶猜：Trae 的
+                                    # ai-chat.chatQueryCompletion.* 存的全是用户历史提问
+                                    item_role = str(item.get("role") or item.get("type") or "").lower()
+                                    if item_role in {"assistant", "ai", "bot", "model", "answer"} or item.get("isUser") is False:
+                                        role = "assistant"
+                                    else:
+                                        role = "user"
+                                    events.append({
+                                        "kind": "message",
+                                        "role": role,
+                                        "timestamp": "",
+                                        "text": txt,
+                                        "tool_name": "",
+                                        "payload": None,
+                                    })
                         except Exception:
                             pass
             except Exception:
@@ -1517,26 +1993,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             path = Path(match["file_path"])
             events = []
             try:
-                with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        d = json.loads(line)
-                        role = d.get("role") or d.get("type") or ""
-                        text = ""
-                        c = d.get("content") or d.get("message", {}).get("content")
-                        if isinstance(c, str):
-                            text = c
-                        elif isinstance(c, list):
-                            text = "\n".join(item.get("text", "") for item in c if isinstance(item, dict) and "text" in item)
-                        
-                        if text:
-                            events.append({
-                                "kind": "message",
-                                "role": "user" if role == "user" else "assistant",
-                                "timestamp": str(d.get("timestamp", "")),
-                                "text": text,
-                                "tool_name": "",
-                                "payload": None,
-                            })
+                events = get_workbuddy_session_events(path)
 
                 self.send_json({
                     "session_id": match["session_id"],
@@ -1561,7 +2018,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
 
             try:
-                events = get_trae_session_messages(match)
+                events = sanitize_session_events(get_trae_session_messages(match), "trae")
                 self.send_json({
                     "session_id": match["session_id"],
                     "format": "trae",
@@ -1603,6 +2060,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                         "tool_call_id": ev.tool_call_id or "",
                         "payload": ev.payload if ev.payload else None,
                     })
+                events_data = sanitize_session_events(events_data, "antigravity")
                 ag_sums = load_antigravity_summaries_map()
                 c_title = ag_sums.get(sess.session_id, {}).get("title") or extract_antigravity_title(path) or sess.session_id[:8]
                 self.send_json({
@@ -1653,6 +2111,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "tool_call_id": ev.tool_call_id or "",
                     "payload": ev.payload if ev.payload else None,
                 })
+            events_data = sanitize_session_events(events_data, sess.source_format.value)
 
             self.send_json({
                 "session_id": sess.session_id,
@@ -1877,18 +2336,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             msgs = []
             try:
-                with open(match["file_path"], "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        d = json.loads(line)
-                        role = d.get("role") or d.get("type")
-                        c = d.get("content") or d.get("message", {}).get("content")
-                        text = ""
-                        if isinstance(c, str):
-                            text = c
-                        elif isinstance(c, list):
-                            text = "\n".join(x.get("text", "") for x in c if isinstance(x, dict) and "text" in x)
-                        if role in {"user", "assistant"} and text:
-                            msgs.append({"role": role, "text": text, "timestamp": str(d.get("timestamp", ""))})
+                for ev in get_workbuddy_session_events(Path(match["file_path"])):
+                    if ev.get("kind") != "message":
+                        continue
+                    role = ev.get("role")
+                    text = (ev.get("text") or "").strip()
+                    if role not in {"user", "assistant"} or not text:
+                        continue
+                    msgs.append({"role": role, "text": text, "timestamp": str(ev.get("timestamp", ""))})
             except Exception as e:
                 self.send_json({"error": f"Failed to parse WorkBuddy file: {e}"}, status=500)
                 return
@@ -3264,6 +3719,103 @@ HTML_PAGE = """<!DOCTYPE html>
       background: rgba(168, 85, 247, 0.12);
       border-color: rgba(168, 85, 247, 0.55);
     }
+    /* 系统通知（后台任务回执 / 上下文压缩快照）：灰色中性，不与用户发言混淆 */
+    .bubble.notice {
+      background: rgba(148, 163, 184, 0.07);
+      border: 1px dashed rgba(148, 163, 184, 0.35);
+      color: #cbd5e1;
+      border-radius: 9px;
+    }
+    .bubble.notice.collapsed {
+      background: rgba(15, 23, 42, 0.55);
+      padding: 6px 12px;
+      cursor: pointer;
+    }
+    .bubble.notice.collapsed:hover {
+      background: rgba(148, 163, 184, 0.14);
+      border-color: rgba(148, 163, 184, 0.6);
+    }
+    .bubble.user .user-text {
+      white-space: pre-wrap;
+      font-size: 13.5px;
+      line-height: 1.65;
+    }
+    .bubble.user.collapsed {
+      padding: 8px 14px;
+      background: linear-gradient(135deg, rgba(79, 70, 229, 0.72), rgba(67, 56, 202, 0.72));
+      box-shadow: none;
+    }
+    .bubble.user.collapsed:hover {
+      background: linear-gradient(135deg, rgba(79, 70, 229, 0.95), rgba(67, 56, 202, 0.95));
+    }
+    .bubble.user .user-raw-toggle {
+      display: inline-block;
+      margin-top: 10px;
+      font-size: 11px;
+      color: rgba(224, 231, 255, 0.8);
+      border-bottom: 1px dotted rgba(224, 231, 255, 0.55);
+      cursor: pointer;
+      user-select: none;
+    }
+    .bubble.user .user-raw-toggle:hover {
+      color: #fff;
+      border-bottom-color: #fff;
+    }
+    .bubble.user .user-raw-body {
+      margin-top: 8px;
+      padding: 10px 12px;
+      border-radius: 6px;
+      background: rgba(15, 23, 42, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      color: #cbd5e1;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      line-height: 1.55;
+      max-height: 320px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    .tool-item {
+      margin-bottom: 10px;
+    }
+    .tool-item:last-child {
+      margin-bottom: 0;
+    }
+    .tool-item-tag {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 4px;
+      margin-bottom: 4px;
+    }
+    .tool-item-tag.tag-think {
+      background: rgba(168, 85, 247, 0.18);
+      color: #c084fc;
+    }
+    .tool-item-tag.tag-call {
+      background: rgba(14, 165, 233, 0.18);
+      color: #38bdf8;
+    }
+    .tool-item-tag.tag-result {
+      background: rgba(16, 185, 129, 0.18);
+      color: #34d399;
+    }
+    .tool-item-pre {
+      margin: 0;
+      padding: 8px 10px;
+      background: rgba(0, 0, 0, 0.32);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 6px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      line-height: 1.5;
+      color: #cbd5e1;
+      max-height: 360px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
     
     /* Collapsible Bubble Header & Summary */
     .bubble-header {
@@ -3329,6 +3881,11 @@ HTML_PAGE = """<!DOCTYPE html>
       background: rgba(168, 85, 247, 0.18);
       color: #c084fc;
       border: 1px solid rgba(168, 85, 247, 0.3);
+    }
+    .bubble-badge.badge-notice {
+      background: rgba(148, 163, 184, 0.18);
+      color: #cbd5e1;
+      border: 1px solid rgba(148, 163, 184, 0.35);
     }
     .bubble-summary {
       font-size: 12.5px;
@@ -4659,6 +5216,94 @@ HTML_PAGE = """<!DOCTYPE html>
       bubble.classList.toggle('collapsed');
     }
 
+    // 把连续的「思考 / 工具调用 / 执行结果」折叠成一条工具执行链
+    function buildDisplayItems(events) {
+      const out = [];
+      let run = null;
+      const flush = () => { if (run) { out.push(run); run = null; } };
+      (events || []).forEach(e => {
+        if (!e) return;
+        const toolish = e.kind === 'thinking' || e.kind === 'tool_call' || e.kind === 'tool_result';
+        if (toolish) {
+          if (!run) run = { kind: 'tool_group', items: [] };
+          run.items.push(e);
+        } else {
+          flush();
+          out.push(e);
+        }
+      });
+      flush();
+      return out;
+    }
+
+    function truncateBlock(text, limit) {
+      const s = text || '';
+      if (s.length <= limit) return s;
+      return s.slice(0, limit) + '\\n... （已截断 ' + (s.length - limit) + ' 字，完整内容见原始会话文件）';
+    }
+
+    function renderToolGroup(items) {
+      const calls = items.filter(i => i.kind === 'tool_call');
+      const thoughts = items.filter(i => i.kind === 'thinking');
+      const results = items.filter(i => i.kind === 'tool_result');
+
+      const chain = [];
+      calls.forEach(c => {
+        const name = c.tool_name || 'tool';
+        const last = chain[chain.length - 1];
+        if (last && last.name === name) last.count++;
+        else chain.push({ name: name, count: 1 });
+      });
+      let chainText = chain.slice(0, 6).map(c => c.count > 1 ? c.name + ' ×' + c.count : c.name).join(' → ');
+      if (chain.length > 6) chainText += ' → …（共 ' + chain.length + ' 段）';
+
+      const parts = [];
+      if (calls.length) parts.push(calls.length + ' 次调用');
+      if (results.length) parts.push(results.length + ' 份结果');
+      if (thoughts.length) parts.push(thoughts.length + ' 段思考');
+
+      const bodyHtml = items.map(i => {
+        if (i.kind === 'thinking') {
+          return '<div class="tool-item"><span class="tool-item-tag tag-think">💭 思考</span><pre class="tool-item-pre">' +
+            escapeHtml(truncateBlock(i.text || '', 4000)) + '</pre></div>';
+        }
+        if (i.kind === 'tool_call') {
+          return '<div class="tool-item"><span class="tool-item-tag tag-call">▶ ' +
+            escapeHtml(i.tool_name || 'tool') + '</span><pre class="tool-item-pre">' +
+            escapeHtml(truncateBlock(i.text || '', 4000)) + '</pre></div>';
+        }
+        const status = i.status ? ' · ' + i.status : '';
+        return '<div class="tool-item"><span class="tool-item-tag tag-result">◀ ' +
+          escapeHtml((i.tool_name || 'tool') + status) + '</span><pre class="tool-item-pre">' +
+          escapeHtml(truncateBlock(i.text || '（无输出）', 6000)) + '</pre></div>';
+      }).join('');
+
+      const totalChars = items.reduce((n, i) => n + (i.text || '').length, 0);
+      return `
+        <div class="bubble tool collapsible collapsed">
+          <div class="bubble-header" onclick="toggleBubble(this)">
+            <div class="bubble-header-left">
+              <span class="bubble-chevron">▼</span>
+              <span class="bubble-badge badge-tool">🔧 工具执行链</span>
+              <div class="bubble-summary">${escapeHtml(chainText || (thoughts.length ? '思考片段' : '执行记录'))} ｜ ${parts.join(' · ')}</div>
+            </div>
+            <div class="bubble-header-right">
+              <span class="bubble-meta-badge">${items.length} 条 · ${totalChars} 字</span>
+            </div>
+          </div>
+          <div class="bubble-body">${bodyHtml}</div>
+        </div>
+      `;
+    }
+
+    function toggleUserRaw(el) {
+      const target = el.nextElementSibling;
+      if (!target) return;
+      const isOpen = target.style.display !== 'none';
+      target.style.display = isOpen ? 'none' : 'block';
+      el.innerText = isOpen ? '查看原始记录（含系统注入）' : '收起原始记录';
+    }
+
     function toggleAllBubbles(expand) {
       const bubbles = document.querySelectorAll('#chatStreamBody .collapsible');
       bubbles.forEach(b => {
@@ -4868,22 +5513,44 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         let userCount = 0;
-        body.innerHTML = '<div class="chat-stream">' + events.map(e => {
+        // 连续的「思考 + 工具调用 + 执行结果」合并为一条工具执行链，避免几千个碎片气泡
+        const displayItems = buildDisplayItems(events);
+        body.innerHTML = '<div class="chat-stream">' + displayItems.map(e => {
           if (e.kind === 'message') {
             if (e.role === 'user') {
               userCount++;
               const uText = e.text || '';
+              const hiddenChars = e.hidden_chars || 0;
+              const rawText = e.raw_text || '';
+              const filterBadge = hiddenChars > 0
+                ? `<span class="bubble-meta-badge" style="background: rgba(16,185,129,0.25); color: #6ee7b7;" title="已剔除系统注入的环境信息、身份文件与时间提醒">🧹 已滤除 ${hiddenChars} 字系统注入</span>`
+                : '';
+              const rawBlock = (hiddenChars > 0 && rawText)
+                ? `<div class="user-raw-toggle" onclick="toggleUserRaw(this)">查看原始记录（含系统注入）</div>
+                   <div class="user-raw-body" style="display: none;">${escapeHtml(rawText)}</div>`
+                : '';
+              // 用户整份文件粘贴：仍算用户指令，但默认折叠成一行，避免刷屏
+              const isPacked = !!e.collapsed;
+              const packedSummary = isPacked
+                ? `<div class="bubble-summary" style="color: #e0e7ff;">${escapeHtml(e.summary || '粘贴内容')}</div>`
+                : '';
               return `
-                <div class="bubble user user-bubble-anchor" data-user-idx="${userCount - 1}">
-                  <div class="bubble-header" style="cursor: default; margin-bottom: 6px;">
+                <div class="bubble user user-bubble-anchor ${isPacked ? 'collapsible collapsed' : ''}" data-user-idx="${userCount - 1}">
+                  <div class="bubble-header" style="cursor: ${isPacked ? 'pointer' : 'default'}; margin-bottom: 6px;" ${isPacked ? 'onclick="toggleBubble(this)"' : ''}>
                     <div class="bubble-header-left">
+                      ${isPacked ? '<span class="bubble-chevron">▼</span>' : ''}
                       <div class="bubble-role" style="font-weight: 800; font-size: 12px; letter-spacing: 0.5px;">👤 用户指令 #${userCount}</div>
+                      ${packedSummary}
                     </div>
                     <div class="bubble-header-right">
+                      ${filterBadge}
                       <span class="bubble-meta-badge" style="background: rgba(255,255,255,0.18); color: #fff;">${uText.length} 字</span>
                     </div>
                   </div>
-                  <div style="white-space: pre-wrap; font-size: 13.5px; line-height: 1.6;">${escapeHtml(uText)}</div>
+                  <div class="bubble-body">
+                    <div class="user-text">${escapeHtml(uText)}</div>
+                    ${rawBlock}
+                  </div>
                 </div>
               `;
             } else {
@@ -4947,6 +5614,32 @@ HTML_PAGE = """<!DOCTYPE html>
                 </div>
                 <div class="bubble-body">
                   <div style="white-space: pre-wrap; font-family: var(--font-mono); font-size: 12px; max-height: 420px; overflow-y: auto; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">${escapeHtml(detailText)}</div>
+                </div>
+              </div>
+            `;
+          } else if (e.kind === 'tool_group') {
+            return renderToolGroup(e.items || []);
+          } else if (e.kind === 'notice') {
+            // 后台任务回执 / 上下文压缩快照：不是用户发言，单独成条且默认收起
+            const nText = e.text || '';
+            const label = e.label || '系统通知';
+            const icon = label === '上下文压缩快照' ? '🗜️' : (label === '自动续写指令' ? '↩️' : '⚙️');
+            const flat = nText.replace(/\\s+/g, ' ');
+            const preview = flat.length > 70 ? flat.slice(0, 70) + '…' : flat;
+            return `
+              <div class="bubble notice collapsible collapsed">
+                <div class="bubble-header" onclick="toggleBubble(this)">
+                  <div class="bubble-header-left">
+                    <span class="bubble-chevron">▼</span>
+                    <span class="bubble-badge badge-notice">${icon} ${escapeHtml(label)}</span>
+                    <div class="bubble-summary">${escapeHtml(preview)}</div>
+                  </div>
+                  <div class="bubble-header-right">
+                    <span class="bubble-meta-badge">${nText.length} 字</span>
+                  </div>
+                </div>
+                <div class="bubble-body">
+                  <div style="white-space: pre-wrap; font-family: var(--font-mono); font-size: 12px; max-height: 420px; overflow-y: auto;">${escapeHtml(nText)}</div>
                 </div>
               </div>
             `;
