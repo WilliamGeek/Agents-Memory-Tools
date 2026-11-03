@@ -153,6 +153,227 @@ def estimate_text_tokens(text: str) -> int:
     return max(1, int(cjk_chars * 1.3 + ascii_chars * 0.25))
 
 
+# ---------------------------------------------------------------------------
+# Recorded usage readers
+#
+# 各客户端其实都把「每次请求的真实 token 用量」写进了自己的会话文件，只是位置不同：
+#   Antigravity : steps.step_payload -> 字段 5 (step metadata) -> 子消息字段 9
+#                 (2=promptTokenCount 3=candidatesTokenCount 9=thoughtsTokenCount)
+#   Claude Code : jsonl 每条 assistant 记录的 message.usage
+#                 (input_tokens / cache_creation_input_tokens / cache_read_input_tokens / output_tokens)
+# 估算口径（estimate_text_tokens）只能量出「内容体积」，而计费按「每次请求的完整上下文」累计，
+# 长会话下两者必定差数倍。因此优先读记录值，估算值退化为 content_tokens 备用指标。
+# ---------------------------------------------------------------------------
+# 缓存签名带版本号：口径变更时旧缓存自动失效，不会沿用历史错误值。
+TOKEN_CACHE_VERSION = 2
+
+
+def _pb_iter(buf: bytes, stop_after: int | None = None):
+    """极简 protobuf wire 读取器，逐字段产出 (field_number, wire_type, value)。
+
+    stop_after 命中后立即返回，避免为拿一小段 metadata 而遍历数十 MB 的 payload。
+    解析失败一律静默终止，交由调用方降级。
+    """
+    i, n = 0, len(buf)
+    while i < n:
+        key = 0
+        shift = 0
+        ok = False
+        while i < n:
+            b = buf[i]
+            i += 1
+            key |= (b & 0x7F) << shift
+            shift += 7
+            if not b & 0x80:
+                ok = True
+                break
+        if not ok or key == 0:
+            return
+        num, wt = key >> 3, key & 7
+        if wt == 0:
+            val = 0
+            shift = 0
+            ok = False
+            while i < n:
+                b = buf[i]
+                i += 1
+                val |= (b & 0x7F) << shift
+                shift += 7
+                if not b & 0x80:
+                    ok = True
+                    break
+            if not ok:
+                return
+        elif wt == 2:
+            ln = 0
+            shift = 0
+            ok = False
+            while i < n:
+                b = buf[i]
+                i += 1
+                ln |= (b & 0x7F) << shift
+                shift += 7
+                if not b & 0x80:
+                    ok = True
+                    break
+            if not ok or ln < 0 or i + ln > n:
+                return
+            val = buf[i:i + ln]
+            i += ln
+        elif wt == 5:
+            if i + 4 > n:
+                return
+            val = buf[i:i + 4]
+            i += 4
+        elif wt == 1:
+            if i + 8 > n:
+                return
+            val = buf[i:i + 8]
+            i += 8
+        else:
+            return
+        yield num, wt, val
+        if stop_after is not None and num == stop_after:
+            return
+
+
+def _antigravity_step_usage(payload: bytes) -> tuple[int, int, int, int] | None:
+    """从单个 step payload 取出 (prompt, output, thoughts, fixed)。"""
+    meta = None
+    for num, wt, val in _pb_iter(payload, stop_after=5):
+        if num == 5 and wt == 2:
+            meta = val
+    if not isinstance(meta, bytes):
+        return None
+    usage = None
+    for num, wt, val in _pb_iter(meta, stop_after=9):
+        if num == 9 and wt == 2:
+            usage = val
+    if not isinstance(usage, bytes):
+        return None
+    fields: dict[int, int] = {}
+    for num, wt, val in _pb_iter(usage):
+        if wt == 0:
+            fields[num] = fields.get(num, 0) + int(val)
+    if 2 not in fields:
+        return None
+    return (
+        fields.get(2, 0),
+        fields.get(3, 0),
+        fields.get(9, 0),
+        fields.get(1, 0),
+    )
+
+
+def _antigravity_recorded_usage(db_path: Path) -> dict[str, int] | None:
+    conn = None
+    agg = {"input": 0, "output": 0, "thoughts": 0, "fixed": 0, "calls": 0}
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        cursor = conn.execute("SELECT step_payload FROM steps")
+        for (payload,) in cursor:
+            if not payload:
+                continue
+            parsed = _antigravity_step_usage(payload)
+            if not parsed:
+                continue
+            prompt, output, thoughts, fixed = parsed
+            agg["input"] += prompt
+            agg["output"] += output
+            agg["thoughts"] += thoughts
+            agg["fixed"] += fixed
+            agg["calls"] += 1
+    except Exception:
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+    if agg["calls"] <= 0 or agg["input"] <= 0:
+        return None
+    return agg
+
+
+def _claude_recorded_usage(jsonl_path: Path) -> dict[str, int] | None:
+    agg = {"input": 0, "output": 0, "thoughts": 0, "fixed": 0, "calls": 0}
+    try:
+        with open(jsonl_path, "r", encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or '"usage"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                msg = rec.get("message")
+                if not isinstance(msg, dict):
+                    continue
+                usage = msg.get("usage")
+                if not isinstance(usage, dict):
+                    continue
+                send = int(usage.get("input_tokens") or 0)
+                cache_write = int(usage.get("cache_creation_input_tokens") or 0)
+                cache_read = int(usage.get("cache_read_input_tokens") or 0)
+                output = int(usage.get("output_tokens") or 0)
+                if send + cache_write + cache_read + output <= 0:
+                    continue
+                # 计费输入 = 新发 + 缓存写入 + 缓存命中
+                agg["input"] += send + cache_write + cache_read
+                agg["output"] += output
+                agg["calls"] += 1
+    except Exception:
+        return None
+    if agg["calls"] <= 0 or agg["input"] <= 0:
+        return None
+    return agg
+
+
+def read_recorded_usage(fmt: str, file_path: Path | None) -> dict[str, int] | None:
+    """按平台读取真实请求用量；读不到返回 None，由估算逻辑接管。
+
+    WorkBuddy 的 model-usage 记录只覆盖极少数请求（本机 2366 次调用仅 6 条），
+    用它求和会严重低估，因此不予采用，继续走累计估算。
+    """
+    if not file_path or not file_path.exists():
+        return None
+    try:
+        if fmt == "antigravity" and file_path.suffix == ".db":
+            return _antigravity_recorded_usage(file_path)
+        if fmt == "claude" and file_path.suffix == ".jsonl":
+            return _claude_recorded_usage(file_path)
+    except Exception:
+        return None
+    return None
+
+
+def _token_fields(tok: dict[str, Any]) -> dict[str, Any]:
+    """把 token 结果摊平进会话字典，供前端与排序使用。"""
+    return {
+        "tokens": tok.get("tokens", 0),
+        "chat_tokens": tok.get("chat_tokens", 0),
+        "aux_tokens": tok.get("aux_tokens", 0),
+        "input_tokens": tok.get("input_tokens", 0),
+        "output_tokens": tok.get("output_tokens", 0),
+        "thoughts_tokens": tok.get("thoughts_tokens", 0),
+        "content_tokens": tok.get("content_tokens", tok.get("tokens", 0)),
+        "usage_source": tok.get("usage_source", "estimated"),
+    }
+
+
+def _token_result_from_cache(cached: dict[str, Any]) -> dict[str, int | str]:
+    return {
+        "tokens": int(cached.get("tokens") or 0),
+        "chat_tokens": int(cached.get("chat_tokens") or 0),
+        "aux_tokens": int(cached.get("aux_tokens") or 0),
+        "input_tokens": int(cached.get("input_tokens") or 0),
+        "output_tokens": int(cached.get("output_tokens") or 0),
+        "thoughts_tokens": int(cached.get("thoughts_tokens") or 0),
+        "content_tokens": int(cached.get("content_tokens") or cached.get("tokens") or 0),
+        "calls": int(cached.get("calls") or 0),
+        "usage_source": str(cached.get("usage_source") or "estimated"),
+    }
+
+
 def compute_session_tokens(
     fmt: str,
     session_id: str,
@@ -161,22 +382,28 @@ def compute_session_tokens(
     size_bytes: int,
     trae_chat_tokens: int | None = None,
     trae_aux_tokens: int | None = None,
-) -> dict[str, int]:
-    """Compute and cache hybrid token breakdown (tokens, chat_tokens, aux_tokens) for a session."""
+) -> dict[str, int | str]:
+    """Compute and cache token figures for a session.
+
+    tokens      —— 对外展示的主口径：有记录值时为「计费总量」(输入+输出)，
+                   否则为内容体积估算值。
+    input_tokens / output_tokens / thoughts_tokens
+                —— 仅在使用记录值时有效。
+    content_tokens
+                —— 内容体积（去重后一次算完），不受重复发送影响，可作体积参考。
+    usage_source—— "recorded" | "estimated"。
+    """
     global _TOKEN_CACHE_DIRTY
     _ensure_token_cache_loaded()
     cache_key = f"{fmt}:{session_id}"
-    sig = f"{int(mtime)}:{int(size_bytes)}"
+    sig = f"v{TOKEN_CACHE_VERSION}:{int(mtime)}:{int(size_bytes)}"
     cached = _TOKEN_CACHE.get(cache_key)
     if cached and cached.get("sig") == sig:
-        return {
-            "tokens": int(cached.get("tokens") or 0),
-            "chat_tokens": int(cached.get("chat_tokens") or 0),
-            "aux_tokens": int(cached.get("aux_tokens") or 0),
-        }
+        return _token_result_from_cache(cached)
 
     chat_t = 0
     aux_t = 0
+    recorded = read_recorded_usage(fmt, file_path)
 
     if fmt == "trae" and trae_chat_tokens is not None:
         chat_t = max(0, int(trae_chat_tokens))
@@ -188,7 +415,8 @@ def compute_session_tokens(
                 _optional_bytes,
                 _optional_text,
             )
-            with sqlite3.connect(f"file:{str(file_path)}?mode=ro", uri=True) as conn:
+            conn = sqlite3.connect(f"file:{str(file_path)}?mode=ro", uri=True)
+            try:
                 for stype, payload in conn.execute(
                     "SELECT step_type, step_payload FROM steps WHERE step_type IN (14, 15)"
                 ).fetchall():
@@ -231,6 +459,8 @@ def compute_session_tokens(
                     or 0
                 )
                 aux_t += int(tool_bytes * 0.25)
+            finally:
+                conn.close()
         except Exception:
             total_est = max(1, int(size_bytes * 0.20))
             chat_t = int(total_est * 0.35)
@@ -311,12 +541,38 @@ def compute_session_tokens(
             chat_t = int(total_est * 0.4)
             aux_t = total_est - chat_t
 
-    total_t = chat_t + aux_t
-    if total_t == 0 and size_bytes > 0:
-        total_t = max(1, int(size_bytes * 0.25))
-        chat_t = total_t
+    content_t = chat_t + aux_t
+    if content_t == 0 and size_bytes > 0:
+        content_t = max(1, int(size_bytes * 0.25))
+        chat_t = content_t
 
-    res = {"tokens": total_t, "chat_tokens": chat_t, "aux_tokens": aux_t}
+    if recorded:
+        billed_in = int(recorded.get("input") or 0)
+        billed_out = int(recorded.get("output") or 0)
+        res: dict[str, int | str] = {
+            "tokens": billed_in + billed_out,
+            # 兼容旧前端字段：chat_tokens 保持「模型产出」，aux_tokens 保持「输入侧」
+            "chat_tokens": billed_out,
+            "aux_tokens": billed_in,
+            "input_tokens": billed_in,
+            "output_tokens": billed_out,
+            "thoughts_tokens": int(recorded.get("thoughts") or 0),
+            "content_tokens": content_t,
+            "calls": int(recorded.get("calls") or 0),
+            "usage_source": "recorded",
+        }
+    else:
+        res = {
+            "tokens": content_t,
+            "chat_tokens": chat_t,
+            "aux_tokens": aux_t,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "thoughts_tokens": 0,
+            "content_tokens": content_t,
+            "calls": 0,
+            "usage_source": "estimated",
+        }
     _TOKEN_CACHE[cache_key] = {"sig": sig, **res}
     _TOKEN_CACHE_DIRTY = True
     return res
@@ -936,6 +1192,20 @@ def sanitize_session_events(events: list[dict[str, Any]], fmt: str = "") -> list
                 "payload": None,
             })
             body = remainder
+            # 这种「动作摘要 + 正文」的打包记录，正文其实是助手当时的答复，
+            # 被平台错标成 user；重标为 assistant，别混进用户指令流。
+            if body:
+                cleaned_events.append({
+                    "kind": "message",
+                    "role": "assistant",
+                    "timestamp": event.get("timestamp", ""),
+                    "text": _wb_tidy_visible(body),
+                    "raw_text": "",
+                    "hidden_chars": 0,
+                    "tool_name": "",
+                    "payload": None,
+                })
+                continue
 
         body = _wb_tidy_visible(body)
         if not body:
@@ -1030,9 +1300,7 @@ def get_workbuddy_sessions() -> list[dict[str, Any]]:
                 "started_at": f"{date_str} 12:00:00",
                 "records": records_count,
                 "bytes": wb_stat.st_size,
-                "tokens": wb_tok["tokens"],
-                "chat_tokens": wb_tok["chat_tokens"],
-                "aux_tokens": wb_tok["aux_tokens"],
+                **_token_fields(wb_tok),
                 "file_path": str(j),
                 "exists": True,
             })
@@ -1357,9 +1625,7 @@ def get_trae_sessions() -> list[dict[str, Any]]:
             "started_at": s["started_at"],
             "records": max(1, s["records"]),
             "bytes": max(1, s["bytes"]),
-            "tokens": trae_tok["tokens"],
-            "chat_tokens": trae_tok["chat_tokens"],
-            "aux_tokens": trae_tok["aux_tokens"],
+            **_token_fields(trae_tok),
             "file_path": str(fp),
             "all_files": list(s["all_files"]),
             "account": s["account"],
@@ -1861,9 +2127,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "started_at": row["started_at"] or (datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat() if mtime else ""),
                 "records": row["records"] or 0,
                 "bytes": s_bytes,
-                "tokens": tok_info["tokens"],
-                "chat_tokens": tok_info["chat_tokens"],
-                "aux_tokens": tok_info["aux_tokens"],
+                **_token_fields(tok_info),
                 "file_path": str(abs_path),
                 "exists": abs_path.exists(),
                 "mtime": mtime,
@@ -1913,9 +2177,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                         "started_at": started_at_str,
                         "records": steps_count,
                         "bytes": ag_size,
-                        "tokens": ag_tok["tokens"],
-                        "chat_tokens": ag_tok["chat_tokens"],
-                        "aux_tokens": ag_tok["aux_tokens"],
+                        **_token_fields(ag_tok),
                         "file_path": str(p),
                         "exists": True,
                         "mtime": mtime,
@@ -4847,14 +5109,20 @@ HTML_PAGE = """<!DOCTYPE html>
       const count = list ? list.length : 0;
       let totalBytes = 0;
       let totalTokens = 0;
-      let totalChatTokens = 0;
-      let totalAuxTokens = 0;
+      let totalInput = 0;
+      let totalOutput = 0;
+      let totalContent = 0;
+      let recordedCount = 0;
+      let estimatedCount = 0;
       if (list) {
         for (const item of list) {
           totalBytes += Number(item.bytes) || 0;
           totalTokens += Number(item.tokens) || 0;
-          totalChatTokens += Number(item.chat_tokens) || 0;
-          totalAuxTokens += Number(item.aux_tokens) || 0;
+          totalInput += Number(item.input_tokens) || 0;
+          totalOutput += Number(item.output_tokens) || 0;
+          totalContent += Number(item.content_tokens) || Number(item.tokens) || 0;
+          if (item.usage_source === 'recorded') recordedCount += 1;
+          else estimatedCount += 1;
         }
       }
       matchEl.innerText = count;
@@ -4867,10 +5135,18 @@ HTML_PAGE = """<!DOCTYPE html>
       }
       if (tokenEl) {
         tokenEl.innerText = formatTokensCompact(totalTokens);
-        const chatPct = totalTokens > 0 ? ((totalChatTokens / totalTokens) * 100).toFixed(1) : '0.0';
-        const auxPct = totalTokens > 0 ? ((totalAuxTokens / totalTokens) * 100).toFixed(1) : '0.0';
+        const pct = (v) => totalTokens > 0 ? ((v / totalTokens) * 100).toFixed(1) : '0.0';
         const scopeLabel = currentFilterFmt === 'all' ? '全平台已索引会话' : `${currentFilterFmt.toUpperCase()} 平台会话`;
-        const breakdownTip = `【${scopeLabel} Token 汇总 (Tiktoken cl100k_base 编码器)】\n• 会话数量: ${count} 篇\n• 累计总消耗: ${totalTokens.toLocaleString()} Tokens\n• 对话正文 (用户+AI): ${totalChatTokens.toLocaleString()} Tokens (${chatPct}%)\n• 工具与思考过程: ${totalAuxTokens.toLocaleString()} Tokens (${auxPct}%)`;
+        const lines = [`【${scopeLabel} Token 汇总】`];
+        lines.push(`• 会话数量: ${count} 篇（真实记录 ${recordedCount} / 估算 ${estimatedCount}）`);
+        lines.push(`• 计费总量: ${totalTokens.toLocaleString()} Tokens`);
+        if (recordedCount > 0) {
+          lines.push(`• 输入（上下文累计）: ${totalInput.toLocaleString()} Tokens (${pct(totalInput)}%)`);
+          lines.push(`• 输出（含思考）: ${totalOutput.toLocaleString()} Tokens (${pct(totalOutput)}%)`);
+        }
+        lines.push(`• 内容体积（去重后一次算完）: ${totalContent.toLocaleString()} Tokens`);
+        lines.push('说明：计费总量 = 每次请求重新发送的完整上下文之和，因此显著大于内容体积；标 ≈ 的会话为本地估算。');
+        const breakdownTip = lines.join('\\n');
         tokenEl.title = breakdownTip;
         if (statsWrap) statsWrap.title = breakdownTip;
       }
@@ -4893,12 +5169,15 @@ HTML_PAGE = """<!DOCTYPE html>
         const dateStr = s.started_at ? s.started_at.replace('T', ' ').slice(0, 16) : '未知时间';
         const sizeStr = (s.bytes / 1024).toFixed(1) + ' KB';
         const tokTotal = Number(s.tokens) || 0;
-        const tokChat = Number(s.chat_tokens) || 0;
-        const tokAux = Number(s.aux_tokens) || 0;
-        const chatPct = tokTotal > 0 ? ((tokChat / tokTotal) * 100).toFixed(1) : '0.0';
-        const auxPct = tokTotal > 0 ? ((tokAux / tokTotal) * 100).toFixed(1) : '0.0';
-        const tokenLabel = formatTokensCompact(tokTotal);
-        const tokenTip = `单会话 Token 统计 (Tiktoken cl100k_base 编码器)&#10;• 总计消耗: ${tokTotal.toLocaleString()} Tokens&#10;• 对话正文 (用户+AI): ${tokChat.toLocaleString()} Tokens (${chatPct}%)&#10;• 工具与思考过程: ${tokAux.toLocaleString()} Tokens (${auxPct}%)`;
+        const isRecorded = s.usage_source === 'recorded';
+        const tokIn = Number(s.input_tokens) || 0;
+        const tokOut = Number(s.output_tokens) || 0;
+        const tokThink = Number(s.thoughts_tokens) || 0;
+        const tokContent = Number(s.content_tokens) || tokTotal;
+        const tokenLabel = (isRecorded ? '' : '≈ ') + formatTokensCompact(tokTotal);
+        const tokenTip = isRecorded
+          ? `真实用量（客户端自身记录）&#10;• 计费总量: ${tokTotal.toLocaleString()} Tokens&#10;• 输入（上下文累计）: ${tokIn.toLocaleString()} Tokens&#10;• 输出（含思考）: ${tokOut.toLocaleString()} Tokens&#10;• 思考: ${tokThink.toLocaleString()} Tokens&#10;• 内容体积（去重）: ${tokContent.toLocaleString()} Tokens`
+          : `估算用量（客户端未记录，按内容体积分词）&#10;• 内容体积: ${tokTotal.toLocaleString()} Tokens&#10;• 实际计费通常为其数倍：每轮对话都会重发整段上下文`;
         return `
           <div class="session-card" style="--badge-gradient: ${bg};">
             <div>

@@ -52,8 +52,10 @@
 
 ---
 
-### 4. 精准的Token 消耗统计 (Token Statistics)
-集成 `tiktoken`（`cl100k_base`）分词引擎与文件指纹哈希缓存，避免重复全量读取，快速统计各会话与全库的消耗量。支持区分“正文对话”与“工具调用/思考过程”，并支持按 Token 总量对会话排序。
+### 4. 贴近账单的 Token 统计 (Token Statistics)
+优先读取客户端自身记录的**真实请求用量**（Antigravity 取 `steps.metadata` 里的 `promptTokenCount / candidatesTokenCount`，Claude Code 取每条 assistant 记录的 `message.usage`），口径与账单一致；无记录数据的平台（如 WorkBuddy、Trae）回退到 `tiktoken`（`cl100k_base`）内容体积估算，并在卡片上以 `≈` 标注来源。
+
+每张卡片与顶部汇总都会同时给出三项：**计费总量（输入累计 + 输出）、输入/输出拆分、内容体积（去重后一次算完）**。这样既能看到真实消耗，也能看到"这段记忆本身有多大"——后者通常只有前者的几分之一，因为智能体每轮都会重发整段上下文。支持按 Token 总量排序。
 
 ![Token 统计视窗](docs/images/04_token_statistics_popover_annotated.png)
 
@@ -61,6 +63,8 @@
 
 ### 5. 规整美观的会话内容呈现
 点击会话卡片可完整还原多轮对话流。不仅呈现用户输入与模型输出，还能完整解析工具调用（Tool Calls）、执行日志、动作链以及智能体沉淀的学习记忆。
+
+「用户指令」只保留你真正敲进去的话：WorkBuddy 注入的身份文件 / 时间提醒、Claude Code 的 `/model` 等斜杠命令、Antigravity 续接历史时的工具动作摘要、Cursor/Codex 的环境注入，都会被剥离成独立的灰色「系统通知」或「CLI 命令」气泡，并标注被滤除的字数，可随时展开原文核对。整份文件粘贴型的长消息默认折叠成一行，避免刷屏。
 
 ![会话详情回放流](docs/images/05_chat_stream_detail_annotated.png)
 
@@ -164,4 +168,4 @@ Memory Tools 启动时会自动尝试扫描系统默认安装路径。若你的�
 
 ### 致谢 (Acknowledgments)
 - 跨智能体会话迁移底层抽象参考了 [session-migrate](https://github.com/mizchi/session-migrate)（MIT 许可证），在此向原作者团队表示感谢。
-- 高性能 Token 编码与分词依赖 OpenAI `tiktoken` 及 HuggingFace `tokenizers` 库。
+- Token 数值优先采用各客户端自身写入的用量记录，估算回退到 OpenAI `tiktoken`；HuggingFace `tokenizers` 作为可选的开放模型词表支持保留。

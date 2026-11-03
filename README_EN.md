@@ -52,8 +52,10 @@ Full-text search across dialogue turns, tool call logs, and reasoning blocks wit
 
 ---
 
-### 4. Accurate Token Usage Statistics
-Combines the `tiktoken` (`cl100k_base`) BPE tokenizer with file-fingerprint caching to avoid redundant scans and calculate usage across individual sessions and the overall catalog. Differentiates between core conversation text and tool invocation/reasoning overhead, with sorting by token volume.
+### 4. Billing-aligned Token Usage Statistics
+Reads the **usage the client itself recorded** wherever available (Antigravity: `promptTokenCount / candidatesTokenCount` inside `steps.metadata`; Claude Code: `message.usage` on every assistant record), so the numbers match what you are actually billed. Platforms without recorded usage (WorkBuddy, Trae) fall back to `tiktoken` (`cl100k_base`) content estimation and are marked with `≈` on the card.
+
+Every card and the summary expose three figures: **billed total (accumulated input + output), the input/output split, and content volume (deduplicated)**. The last one is typically a fraction of the former, because the agent re-sends the whole context on every turn. Sorting by token volume is supported.
 
 ![Token Statistics](docs/images/04_token_statistics_popover_annotated.png)
 
@@ -163,4 +165,4 @@ This project is licensed under **[CC BY-NC-SA 4.0 (Creative Commons Attribution-
 
 ### Acknowledgments
 - Underlying migration protocols reference [session-migrate](https://github.com/mizchi/session-migrate) (MIT License).
-- Token calculations leverage OpenAI's `tiktoken` and HuggingFace's `tokenizers`.
+- Token figures prefer the usage records written by each client; estimation falls back to OpenAI's `tiktoken`. The optional HuggingFace `tokenizers` dependency is reserved for open-model vocabularies.
