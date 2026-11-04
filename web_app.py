@@ -14,6 +14,7 @@ import shutil
 import tempfile
 import urllib.parse
 import re
+import hashlib
 from html import unescape as _html_unescape
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -642,6 +643,118 @@ ANTIGRAVITY_CONV_DIRS = [
     Path(r"C:\Users\HP\.gemini\antigravity\conversations"),
     Path(r"C:\Users\HP\.gemini\antigravity-cli\conversations"),
 ]
+
+_AG_LINEAGE_CACHE: dict[tuple[str, float, int], str] = {}
+
+
+def antigravity_lineage_key(db_path: Path) -> str:
+    """同源对话指纹。
+
+    Antigravity 在「恢复/分叉/崩溃重启」时会整段复制历史步骤，生成一个全新
+    conversation_id 的 .db —— 前几步的 payload 字节完全相同。用前 3 步的哈希
+    作为血缘标识，就能把同一条对话的多个快照认出来。
+    """
+    try:
+        stat = db_path.stat()
+    except OSError:
+        return ""
+    cache_key = (str(db_path), stat.st_mtime, stat.st_size)
+    cached = _AG_LINEAGE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    key = ""
+    try:
+        with sqlite3.connect(f"file:{str(db_path)}?mode=ro", uri=True) as conn:
+            rows = conn.execute("SELECT step_payload FROM steps ORDER BY idx LIMIT 3").fetchall()
+        digest = hashlib.sha256()
+        for (payload,) in rows:
+            if payload:
+                digest.update(payload)
+        if rows:
+            key = digest.hexdigest()[:16]
+    except Exception:
+        key = ""
+    if key:
+        _AG_LINEAGE_CACHE[cache_key] = key
+    return key
+
+
+_AG_BTW_MARKER = "This is a side question from the user"
+_AG_BTW_CACHE: dict[tuple[str, float, int], str] = {}
+
+
+def antigravity_side_question(db_path: Path) -> str:
+    """识别 /btw 旁问分支。
+
+    Antigravity 的侧边提问不会追加到主线，而是复制整段历史另开一个会话，末尾
+    插入一条合成消息：「This is a side question from the user... Here is the
+    question: xxx」。命中的会话返回真正的提问内容，便于 UI 标注。
+    """
+    try:
+        stat = db_path.stat()
+    except OSError:
+        return ""
+    cache_key = (str(db_path), stat.st_mtime, stat.st_size)
+    if cache_key in _AG_BTW_CACHE:
+        return _AG_BTW_CACHE[cache_key]
+    question = ""
+    try:
+        from session_migrate.formats.antigravity import (
+            _decode_message as _ag_decode,
+            _optional_bytes as _ag_bytes,
+            _optional_text as _ag_text,
+        )
+
+        with sqlite3.connect(f"file:{str(db_path)}?mode=ro", uri=True) as conn:
+            rows = conn.execute(
+                "SELECT step_payload FROM steps WHERE step_type=14 ORDER BY idx DESC LIMIT 2"
+            ).fetchall()
+        for (payload,) in rows:
+            if not payload:
+                continue
+            # 用户输入步：外层 payload 里第 19 号字段内嵌正文
+            text = ""
+            try:
+                outer = _ag_decode(payload)
+                inner = _ag_bytes(outer, 19)
+                if inner:
+                    fields = _ag_decode(inner)
+                    text = _ag_text(fields, 2) or _ag_text(fields, 1) or ""
+            except Exception:
+                text = ""
+            if not text.startswith(_AG_BTW_MARKER):
+                continue
+            question = text.split("Here is the question:", 1)[-1].strip()
+            break
+    except Exception:
+        question = ""
+    _AG_BTW_CACHE[cache_key] = question
+    return question
+
+
+def _mark_antigravity_lineage(results: list[dict[str, Any]]) -> None:
+    """给同源对话打标：步骤最多的那份算主快照，其余标记为分叉副本。"""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in results:
+        if item.get("format") != "antigravity":
+            continue
+        key = item.get("lineage")
+        if not key:
+            continue
+        groups.setdefault(key, []).append(item)
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        primary = max(group, key=lambda x: (int(x.get("records") or 0), float(x.get("mtime") or 0)))
+        for item in group:
+            item["lineage_size"] = len(group)
+            item["lineage_head_id"] = primary.get("catalog_id")
+            item["lineage_head_title"] = primary.get("title")
+            item["lineage_head_steps"] = primary.get("records")
+            item["is_lineage_branch"] = item is not primary
+            if item is not primary:
+                item["branch_label"] = "/btw 旁问" if item.get("side_question") else "同源分支"
+
 
 def load_antigravity_summaries_map() -> dict[str, dict[str, Any]]:
     """Load latest official titles and metadata from Antigravity's conversation_summaries.db."""
@@ -1966,7 +2079,24 @@ class RequestHandler(BaseHTTPRequestHandler):
         trae_sessions = get_trae_sessions()
         format_counts["workbuddy"] = len(wb_sessions)
         format_counts["trae"] = len(trae_sessions)
-        total_sessions = cat_sessions + len(wb_sessions) + len(trae_sessions)
+
+        # Antigravity 以磁盘上真实存在的 .db 为准：索引库可能滞后或漏扫，
+        # 否则顶部总数会和列表实际条数对不上
+        ag_seen: set[str] = set()
+        for ag_dir in ANTIGRAVITY_CONV_DIRS:
+            if not ag_dir.exists():
+                continue
+            for ag_db in ag_dir.glob("*.db"):
+                try:
+                    if ag_db.name.endswith(("-wal", "-shm")) or ag_db.stat().st_size == 0:
+                        continue
+                except OSError:
+                    continue
+                ag_seen.add(ag_db.stem)
+        if ag_seen:
+            format_counts["antigravity"] = len(ag_seen)
+
+        total_sessions = sum(int(v or 0) for v in format_counts.values())
 
         # Append Trae user & memory data directories into roots_data
         trae_user_dir = Path(r"C:\Users\HP\AppData\Roaming\Trae CN\User")
@@ -2119,7 +2249,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
             s_bytes = row["bytes"] or (abs_path.stat().st_size if abs_path.exists() else 0)
             tok_info = compute_session_tokens(fmt, sid, abs_path if abs_path.exists() else None, mtime, s_bytes)
-            results.append({
+            catalog_entry = {
                 "catalog_id": row["catalog_id"],
                 "format": fmt,
                 "session_id": sid,
@@ -2131,7 +2261,18 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "file_path": str(abs_path),
                 "exists": abs_path.exists(),
                 "mtime": mtime,
-            })
+            }
+            if fmt == "antigravity" and abs_path.exists():
+                # 索引库里的步数会滞后（会话还在增长），血缘/旁问标记也只存在于
+                # 实时扫描里；这里用磁盘真实值覆盖，保证与未入库会话口径一致
+                try:
+                    with sqlite3.connect(f"file:{str(abs_path)}?mode=ro", uri=True) as ag_conn:
+                        catalog_entry["records"] = ag_conn.execute("SELECT count(*) FROM steps").fetchone()[0]
+                except Exception:
+                    pass
+                catalog_entry["lineage"] = antigravity_lineage_key(abs_path)
+                catalog_entry["side_question"] = antigravity_side_question(abs_path)
+            results.append(catalog_entry)
 
         # Directly merge any Antigravity conversation .db files that were missed or new
         if fmt_filter in {"all", "antigravity", ""}:
@@ -2177,6 +2318,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                         "started_at": started_at_str,
                         "records": steps_count,
                         "bytes": ag_size,
+                        "lineage": antigravity_lineage_key(p),
+                        "side_question": antigravity_side_question(p),
                         **_token_fields(ag_tok),
                         "file_path": str(p),
                         "exists": True,
@@ -2230,6 +2373,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             return float(item.get("mtime") or 0)
 
         flush_token_cache()
+        _mark_antigravity_lineage(results)
         if not fmt_filter or fmt_filter == "all":
             _GLOBAL_SESSIONS_CACHE["ts"] = time.time()
             _GLOBAL_SESSIONS_CACHE["data"] = list(results)
@@ -3982,13 +4126,50 @@ HTML_PAGE = """<!DOCTYPE html>
       border-color: rgba(168, 85, 247, 0.55);
     }
     /* 系统通知（后台任务回执 / 上下文压缩快照）：灰色中性，不与用户发言混淆 */
+    /* 同源分叉标记（Antigravity 分叉/恢复产生的重复快照） */
+    .lineage-badge {
+      font-size: 10.5px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 5px;
+      background: rgba(148, 163, 184, 0.16);
+      color: #cbd5e1;
+      border: 1px dashed rgba(148, 163, 184, 0.45);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .lineage-badge.is-head {
+      background: rgba(99, 102, 241, 0.16);
+      color: #a5b4fc;
+      border: 1px solid rgba(99, 102, 241, 0.42);
+    }
+    .lineage-badge.is-btw {
+      background: rgba(245, 158, 11, 0.16);
+      color: #fbbf24;
+      border: 1px dashed rgba(245, 158, 11, 0.5);
+    }
+    .card-sideq {
+      margin-top: 5px;
+      font-size: 11.5px;
+      color: #94a3b8;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .session-card.is-branch {
+      opacity: 0.72;
+    }
+    .sort-dir-quick-btn.active {
+      background: rgba(99, 102, 241, 0.28);
+      border-color: rgba(129, 140, 248, 0.65);
+      color: #c7d2fe;
+    }
     .bubble.notice {
       background: rgba(148, 163, 184, 0.07);
       border: 1px dashed rgba(148, 163, 184, 0.35);
       color: #cbd5e1;
       border-radius: 9px;
-    }
-    .bubble.notice.collapsed {
+    }    .bubble.notice.collapsed {
       background: rgba(15, 23, 42, 0.55);
       padding: 6px 12px;
       cursor: pointer;
@@ -4615,6 +4796,9 @@ HTML_PAGE = """<!DOCTYPE html>
         <button class="sort-dir-quick-btn" id="btnSortDirQuick" onclick="toggleSortOrderQuick()" title="点击一键反转升/降序">
           <span id="sortDirQuickIcon">⬇️</span>
         </button>
+        <button class="sort-dir-quick-btn" id="btnFoldLineage" onclick="toggleFoldLineage()" title="折叠同一条对话的分叉快照（Antigravity 分叉/副本）" style="display: none;">
+          <span>⧉</span>
+        </button>
         <div class="results-stats-compact" id="resultsStats" title="当前匹配的会话统计">
           <span class="stat-highlight" id="statMatchCount">0</span> 篇 · <span class="stat-highlight" id="statTotalSize">0 KB</span> · 🪙 <span class="stat-highlight stat-token-highlight" id="statTotalTokens">0 Tokens</span>
         </div>
@@ -4956,6 +5140,7 @@ HTML_PAGE = """<!DOCTYPE html>
     let appStatus = null;
     let allSessions = [];
     let currentFilterFmt = 'all';
+    let foldLineage = false;   // 是否折叠同源分叉快照
     let activeMigrateSession = null;
     let selectedTargetFormat = 'claude';
 
@@ -5153,9 +5338,23 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function applySortAndRender() {
-      const sorted = sortSessionsList(allSessions);
+      const branchCount = (allSessions || []).filter(s => s.is_lineage_branch).length;
+      const foldBtn = document.getElementById('btnFoldLineage');
+      if (foldBtn) {
+        foldBtn.style.display = branchCount ? '' : 'none';
+        foldBtn.classList.toggle('active', foldLineage);
+        foldBtn.title = `折叠同一条对话的分叉快照（当前 ${branchCount} 个副本，多为 Antigravity 分叉/恢复产生）`;
+      }
+      const base = foldLineage ? (allSessions || []).filter(s => !s.is_lineage_branch) : allSessions;
+      const sorted = sortSessionsList(base);
       renderSessions(sorted);
       updateResultsStats(sorted);
+    }
+
+    function toggleFoldLineage() {
+      foldLineage = !foldLineage;
+      applySortAndRender();
+      showToast(foldLineage ? '已折叠同源分叉副本，只保留主快照' : '已展开全部同源分支');
     }
 
     function renderSessions(list) {
@@ -5179,13 +5378,21 @@ HTML_PAGE = """<!DOCTYPE html>
           ? `真实用量（客户端自身记录）&#10;• 计费总量: ${tokTotal.toLocaleString()} Tokens&#10;• 输入（上下文累计）: ${tokIn.toLocaleString()} Tokens&#10;• 输出（含思考）: ${tokOut.toLocaleString()} Tokens&#10;• 思考: ${tokThink.toLocaleString()} Tokens&#10;• 内容体积（去重）: ${tokContent.toLocaleString()} Tokens`
           : `估算用量（客户端未记录，按内容体积分词）&#10;• 内容体积: ${tokTotal.toLocaleString()} Tokens&#10;• 实际计费通常为其数倍：每轮对话都会重发整段上下文`;
         return `
-          <div class="session-card" style="--badge-gradient: ${bg};">
+          <div class="session-card ${s.is_lineage_branch ? 'is-branch' : ''}" style="--badge-gradient: ${bg};">
             <div>
               <div class="card-top">
                 <span class="format-badge" style="background: ${bg};">${s.format}</span>
+                ${s.is_lineage_branch
+                  ? `<span class="lineage-badge ${s.side_question ? 'is-btw' : ''}" title="${s.side_question ? '用 /btw 侧边提问时，Antigravity 复制整段历史另开会话保存这条旁问：' + escapeHtml(s.side_question) : '与「' + escapeHtml(s.lineage_head_title || '') + '」是同一条对话；Antigravity 分叉/恢复时整段复制出的旧快照（主副本 ' + (s.lineage_head_steps || '?') + ' 步）'}">↳ ${escapeHtml(s.branch_label || '同源分支')}</span>`
+                  : (s.lineage_size > 1
+                      ? `<span class="lineage-badge is-head" title="这条对话另有 ${s.lineage_size - 1} 个分叉副本占用磁盘">⧉ ${s.lineage_size} 个分叉</span>`
+                      : '')}
                 <span class="card-time">${dateStr}</span>
               </div>
               <div class="card-title" title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</div>
+              ${s.side_question
+                ? `<div class="card-sideq" title="这条会话是一次 /btw 侧边提问：${escapeHtml(s.side_question)}">💬 旁问：${escapeHtml(s.side_question)}</div>`
+                : ''}
               <div class="card-meta">
                 <div class="meta-item"><span>🔢</span> <span>${s.records} 步</span></div>
                 <div class="meta-item"><span>📦</span> <span>${sizeStr}</span></div>
