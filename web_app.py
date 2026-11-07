@@ -63,6 +63,41 @@ from session_migrate.conversion import (
     install_grok_artifact,
 )
 
+def _install_antigravity_child_session_compat() -> None:
+    """让 Antigravity 的子代理会话可读。
+
+    browser 等子代理会话会把 trajectory_metadata_blob 的字段 6（root）写成
+    「父会话 id」，而 session_migrate 的校验要求它等于本库的 conversation_id，
+    于是整段会话解析直接失败（trajectory metadata root ID is inconsistent）。
+
+    读取路径（generated=False）把 root 当作 conversation_id 交给原校验即可通过，
+    其余校验（时间戳、project）保持不变；写入路径仍走原逻辑，避免产出不合规的
+    迁移包。
+    """
+    try:
+        from session_migrate.formats import antigravity as _ag
+    except Exception:
+        return
+    if getattr(_ag, "_child_session_compat", False):
+        return
+    original = _ag._validate_trajectory_metadata
+
+    def lenient(data, conversation_id, *, generated):
+        if not generated:
+            try:
+                root = _ag._optional_text(_ag._decode_message(data), 6)
+            except Exception:
+                root = None
+            if root and root != conversation_id:
+                return original(data, root, generated=False)
+        return original(data, conversation_id, generated=generated)
+
+    _ag._validate_trajectory_metadata = lenient
+    _ag._child_session_compat = True
+
+
+_install_antigravity_child_session_compat()
+
 PORT = 18922
 BASE_DIR = Path(__file__).resolve().parent
 EXPORT_DIR = BASE_DIR / "exports"
@@ -770,7 +805,9 @@ def load_antigravity_summaries_map() -> dict[str, dict[str, Any]]:
             with sqlite3.connect(f"file:{str(db_p)}?mode=ro", uri=True) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
-                    "SELECT conversation_id, title, preview, step_count, last_modified_time FROM conversation_summaries"
+                    "SELECT conversation_id, title, preview, step_count, last_modified_time,"
+                    " parent_conversation_id, nesting_depth, agent_name"
+                    " FROM conversation_summaries"
                 ).fetchall()
                 for r in rows:
                     cid = r["conversation_id"]
@@ -788,10 +825,122 @@ def load_antigravity_summaries_map() -> dict[str, dict[str, Any]]:
                         "title": clean_t or t or p,
                         "step_count": r["step_count"],
                         "last_modified_time": r["last_modified_time"],
+                        "parent_id": (r["parent_conversation_id"] or "").strip(),
+                        "nesting_depth": r["nesting_depth"] or 0,
+                        "agent_name": (r["agent_name"] or "").strip(),
                     }
         except Exception:
             pass
     return summaries
+
+def antigravity_parent_title(
+    sid: str, summaries: dict[str, dict[str, Any]], _depth: int = 0
+) -> tuple[str, str]:
+    """向上找父会话标题，返回 (父标题, 本会话的 agent 名)。
+
+    Antigravity 的 browser 等子代理会话在 conversation_summaries 里 title 恒为空，
+    只有 parent_conversation_id。回溯父链才能给出可读名字。
+    """
+    info = summaries.get(sid)
+    if not info or _depth > 4:
+        return "", ""
+    agent = str(info.get("agent_name") or "")
+    parent_id = str(info.get("parent_id") or "")
+    if not parent_id:
+        return "", agent
+    parent = summaries.get(parent_id)
+    if not parent:
+        return "", agent
+    parent_title = str(parent.get("title") or "")
+    if not parent_title and parent.get("parent_id"):
+        parent_title, _ = antigravity_parent_title(parent_id, summaries, _depth + 1)
+    return parent_title, agent or str(parent.get("agent_name") or "")
+
+
+_AG_FIRST_TEXT_CACHE: dict[tuple[str, float, int], str] = {}
+
+
+def antigravity_first_user_text(db_path: Path, limit: int = 48) -> str:
+    """取会话第一条用户输入作为标题兜底。
+
+    直接走 protobuf：payload → 字段 19（用户输入）→ 子字段 2（正文）。
+    """
+    try:
+        stat = db_path.stat()
+    except OSError:
+        return ""
+    cache_key = (str(db_path), stat.st_mtime, stat.st_size)
+    if cache_key in _AG_FIRST_TEXT_CACHE:
+        return _AG_FIRST_TEXT_CACHE[cache_key]
+    text = ""
+    conn = None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        rows = conn.execute(
+            "SELECT step_payload FROM steps WHERE step_type = 14 ORDER BY idx ASC LIMIT 3"
+        ).fetchall()
+        for (payload,) in rows:
+            if not payload:
+                continue
+            inner = None
+            for num, wt, val in _pb_iter(payload, stop_after=19):
+                if num == 19 and wt == 2:
+                    inner = val
+            if not isinstance(inner, bytes):
+                continue
+            body = None
+            for num, wt, val in _pb_iter(inner):
+                if num == 2 and wt == 2:
+                    body = val
+                    break
+            if not isinstance(body, bytes):
+                continue
+            candidate = body.decode("utf-8", "ignore").strip()
+            if candidate:
+                text = clean_human_title(candidate.splitlines()[0].strip())
+                if text:
+                    break
+    except Exception:
+        text = ""
+    finally:
+        if conn is not None:
+            conn.close()
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "…"
+    _AG_FIRST_TEXT_CACHE[cache_key] = text
+    return text
+
+
+def trae_encrypted_store_notice() -> str:
+    """检测 Trae 新版加密会话库，返回给前端的说明（无则空串）。
+
+    新版 Trae 把会话正文迁进 ModularData/ai-agent/database.db（SQLCipher 风格的
+    加密库，无 SQLite 头、熵 ~8.0），工具无法读取；只剩 .trae-cn/memory 下的摘要
+    jsonl。当加密库明显比最后一份摘要新时，说明有新会话没被索引到。
+    """
+    db = Path(r"C:\Users\HP\AppData\Roaming\Trae CN\ModularData\ai-agent\database.db")
+    if not db.exists():
+        return ""
+    mem_dir = Path(r"C:\Users\HP\.trae-cn\memory\projects")
+    newest = 0.0
+    try:
+        for f in mem_dir.rglob("session_memory_*.jsonl"):
+            newest = max(newest, f.stat().st_mtime)
+    except OSError:
+        return ""
+    try:
+        db_mtime = db.stat().st_mtime
+    except OSError:
+        return ""
+    if db_mtime <= newest + 86400:
+        return ""
+    last = datetime.fromtimestamp(newest).strftime("%Y-%m-%d") if newest else "无"
+    return (
+        "Trae 新版把会话正文与标题存进了加密库（ModularData\\ai-agent\\database.db），"
+        f"工具无法读取；目前只能索引到 {last} 之前的摘要记录。"
+        "该日期之后的 Trae 会话不会出现在列表中，也无法在详情里看到模型回复与工具链。"
+    )
+
 
 def ensure_antigravity_catalog_roots():
     """Ensure ~/.gemini/antigravity is registered in catalog database."""
@@ -2299,7 +2448,17 @@ class RequestHandler(BaseHTTPRequestHandler):
                     if sid in ag_summaries and ag_summaries[sid].get("title"):
                         clean_t = ag_summaries[sid]["title"]
                     if not clean_t:
-                        clean_t = extract_antigravity_title(p) or f"会话_{sid[:8]}"
+                        clean_t = extract_antigravity_title(p)
+                    if not clean_t:
+                        # Antigravity 只给顶层会话起名：browser 等子代理会话的 title
+                        # 恒为空。此时继承父会话标题，并标注子会话类型。
+                        parent_title, agent_name = antigravity_parent_title(sid, ag_summaries)
+                        if parent_title:
+                            clean_t = f"{parent_title} · {agent_name or '子代理'} 子会话"
+                    if not clean_t:
+                        clean_t = antigravity_first_user_text(p)
+                    if not clean_t:
+                        clean_t = f"会话_{sid[:8]}"
                     title = f"{d} · {clean_t}"
                     if search:
                         haystack = f"{title} {sid} antigravity {str(p)}".lower()
@@ -2386,7 +2545,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             _GLOBAL_SESSIONS_CACHE["data"] = list(results)
 
         results.sort(key=get_sort_key, reverse=is_desc)
-        self.send_json({"sessions": results, "count": len(results)})
+        payload: dict[str, Any] = {"sessions": results, "count": len(results)}
+        if fmt_filter in {"", "all", "trae"}:
+            notice = trae_encrypted_store_notice()
+            if notice:
+                payload["notice"] = notice
+        self.send_json(payload)
 
     def handle_get_session_detail(self, query: dict[str, list[str]]):
         cid = query.get("catalog_id", [""])[0]
@@ -2432,6 +2596,12 @@ class RequestHandler(BaseHTTPRequestHandler):
 
             try:
                 events = sanitize_session_events(get_trae_session_messages(match), "trae")
+                notice = ""
+                if not any(e.get("role") == "assistant" for e in events):
+                    notice = (
+                        "这条会话只留下了用户指令（摘要或草稿），模型回复、思考与工具调用"
+                        "在 Trae 的加密库中，工具读不到，属于数据源限制。"
+                    )
                 self.send_json({
                     "session_id": match["session_id"],
                     "format": "trae",
@@ -2439,6 +2609,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "started_at": match["started_at"],
                     "events_count": len(events),
                     "events": events,
+                    "notice": notice,
                 })
                 return
             except Exception as e:
@@ -2475,7 +2646,27 @@ class RequestHandler(BaseHTTPRequestHandler):
                     })
                 events_data = sanitize_session_events(events_data, "antigravity")
                 ag_sums = load_antigravity_summaries_map()
-                c_title = ag_sums.get(sess.session_id, {}).get("title") or extract_antigravity_title(path) or sess.session_id[:8]
+                info = ag_sums.get(sess.session_id, {})
+                c_title = info.get("title") or extract_antigravity_title(path)
+                if not c_title:
+                    parent_title, agent_name = antigravity_parent_title(sess.session_id, ag_sums)
+                    if parent_title:
+                        c_title = f"{parent_title} · {agent_name or '子代理'} 子会话"
+                if not c_title:
+                    c_title = antigravity_first_user_text(path)
+                if not c_title:
+                    c_title = sess.session_id[:8]
+                notice = ""
+                if info.get("parent_id"):
+                    parent_title, agent_name = antigravity_parent_title(sess.session_id, ag_sums)
+                    label = agent_name or "子代理"
+                    if parent_title:
+                        notice = (
+                            f"这是「{parent_title}」派生出的 {label} 子会话，"
+                            "由子代理执行而非你直接发起，因此内容多为工具步骤。"
+                        )
+                    else:
+                        notice = f"这是 {label} 子代理派生的子会话，内容多为工具步骤。"
                 self.send_json({
                     "session_id": sess.session_id,
                     "format": sess.source_format.value,
@@ -2483,6 +2674,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "started_at": sess.started_at or "",
                     "events_count": len(events_data),
                     "events": events_data,
+                    "notice": notice,
                 })
                 return
             except Exception as e:
@@ -3819,6 +4011,30 @@ HTML_PAGE = """<!DOCTYPE html>
       padding: 6px 0;
     }
     /* Modal Styles */
+    .data-source-notice {
+      display: flex;
+      gap: 8px;
+      margin: 0 0 14px 0;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 12.5px;
+      line-height: 1.6;
+      color: #fcd34d;
+      background: rgba(245, 158, 11, 0.1);
+      border: 1px solid rgba(245, 158, 11, 0.28);
+    }
+
+    .detail-notice {
+      margin: 0 0 14px 0;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 12.5px;
+      line-height: 1.6;
+      color: #fcd34d;
+      background: rgba(245, 158, 11, 0.1);
+      border: 1px solid rgba(245, 158, 11, 0.28);
+    }
+
     .modal-backdrop {
       position: fixed;
       inset: 0;
@@ -3829,8 +4045,7 @@ HTML_PAGE = """<!DOCTYPE html>
       align-items: center;
       justify-content: center;
       opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.25s ease;
+      pointer-events: none;      transition: opacity 0.25s ease;
       padding: 24px;
     }
     .modal-backdrop.open {
@@ -4813,6 +5028,7 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
 
     <!-- Sessions Grid -->
+    <div class="data-source-notice" id="sessionsNotice" style="display: none;"></div>
     <div class="sessions-grid" id="sessionsGrid">
       <div style="grid-column: 1/-1; text-align: center; padding: 60px; color: var(--text-muted);">
         正在加载全平台会话数据...
@@ -5207,6 +5423,15 @@ HTML_PAGE = """<!DOCTYPE html>
       const res = await fetch(`/api/sessions?q=${encodeURIComponent(q)}&format=${fmt}&sort_by=${sort}&order=${order}`);
       const data = await res.json();
       allSessions = data.sessions || [];
+      const noticeEl = document.getElementById('sessionsNotice');
+      if (noticeEl) {
+        if (data.notice) {
+          noticeEl.textContent = data.notice;
+          noticeEl.style.display = '';
+        } else {
+          noticeEl.style.display = 'none';
+        }
+      }
       applySortAndRender();
     }
 
@@ -6000,15 +6225,18 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         const events = data.events || [];
+        const detailNotice = data.notice
+          ? `<div class="detail-notice">⚠️ ${escapeHtml(data.notice)}</div>`
+          : '';
         if (events.length === 0) {
-          body.innerHTML = '<div style="text-align: center; padding: 40px; color: var(--text-muted);">该会话为内部配置或暂无结构化消息文本</div>';
+          body.innerHTML = detailNotice || '<div style="text-align: center; padding: 40px; color: var(--text-muted);">该会话为内部配置或暂无结构化消息文本</div>';
           return;
         }
 
         let userCount = 0;
         // 连续的「思考 + 工具调用 + 执行结果」合并为一条工具执行链，避免几千个碎片气泡
         const displayItems = buildDisplayItems(events);
-        body.innerHTML = '<div class="chat-stream">' + displayItems.map(e => {
+        body.innerHTML = detailNotice + '<div class="chat-stream">' + displayItems.map(e => {
           if (e.kind === 'message') {
             if (e.role === 'user') {
               userCount++;
