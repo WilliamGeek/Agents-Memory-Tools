@@ -1702,6 +1702,13 @@ def get_trae_sessions() -> list[dict[str, Any]]:
 
     # 3. Assemble and calculate tokens for all sessions
     for sid, s in sessions_map.items():
+        # Trae 在 state.vscdb 里会留下只有 all_session_badges_<id>（空值）和空
+        # chatQueryCompletion 的壳记录：没有标题、没有正文、0 步 0 字节。
+        # 另有一类 20~74 步但正文不足 1KB 的记录，同样只是工作区标签残留。
+        # 它们既无法查看也无法迁移，直接跳过，避免污染列表和统计。
+        has_text = any(t and t.strip() for t in s["chat_text_buf"])
+        if not s["title"].strip() and not has_text and s["bytes"] < 1024:
+            continue
         fp = Path(s["file_path"]) if s["file_path"] else Path(r"C:\Users\HP\AppData\Roaming\Trae CN\User\globalStorage\state.vscdb")
         mtime = s["mtime"] if s["mtime"] > 0 else (fp.stat().st_mtime if fp.exists() else time.time())
         date_str = ""
