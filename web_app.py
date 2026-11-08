@@ -6466,8 +6466,8 @@ HTML_PAGE = """<!DOCTYPE html>
         order: 10;
       }
       .sessions-grid {
-        grid-template-columns: 1fr;
-        gap: 12px;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: 14px;
       }
       .session-card {
         padding: 16px;
@@ -6633,7 +6633,17 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     /* -------------------------------------------------------------
-       5. Very Narrow Mobile Phones (<= 420px)
+       5. Mobile Phones (<= 640px)
+       ------------------------------------------------------------- */
+    @media (max-width: 640px) {
+      .sessions-grid {
+        grid-template-columns: 1fr !important;
+        gap: 12px;
+      }
+    }
+
+    /* -------------------------------------------------------------
+       6. Very Narrow Mobile Phones (<= 420px)
        ------------------------------------------------------------- */
     @media (max-width: 420px) {
       .logo-title {
