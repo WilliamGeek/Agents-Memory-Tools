@@ -4041,47 +4041,65 @@ HTML_PAGE = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Memory Tools</title>
-  <!-- 现代化高品质本地原生字体栈：100% 离线可用，零网络延迟阻塞 -->
+  <title>Agents Memory Tools</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23e4e4e7' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='4' fill='%23111113' stroke='%233f3f46'/%3E%3Cpath d='M8 9l3 3-3 3'/%3E%3Cline x1='13' y1='15' x2='16' y2='15'/%3E%3C/svg%3E">
+  <!-- Linear × Data-Dense Design System (100% Offline Native Font Stack) -->
   <style>
     :root {
-      --bg: #090d16;
-      --card-bg: rgba(18, 24, 38, 0.7);
-      --card-border: rgba(255, 255, 255, 0.08);
-      --card-hover-border: rgba(99, 102, 241, 0.4);
-      --text-main: #f1f5f9;
-      --text-muted: #94a3b8;
-      --accent-indigo: #6366f1;
-      --accent-purple: #a855f7;
+      --bg: #0a0a0b;
+      --surface-1: #111113;
+      --surface-2: #16161a;
+      --surface-3: #1c1c21;
+      --card-bg: #111113;
+      --card-border: #222326;
+      --card-hover-border: #383a42;
+      --border-subtle: #1c1d21;
+      --text-main: #f4f4f6;
+      --text-secondary: #c4c4cc;
+      --text-muted: #8a8a94;
+      --text-dim: #52525b;
+      --accent-indigo: #5e6ad2;
+      --accent-indigo-hover: #6e7ae2;
+      --accent-purple: #8b5cf6;
       --accent-cyan: #06b6d4;
       --accent-emerald: #10b981;
       --accent-amber: #f59e0b;
-      --accent-rose: #f43f5e;
-      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
-      --font-mono: "JetBrains Mono", "Cascadia Code", "Fira Code", Consolas, "SF Mono", Monaco, "Courier New", monospace;
+      --accent-rose: #e11d48;
+      --accent-blue: #3b82f6;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      --font-mono: "JetBrains Mono", "Cascadia Code", "Fira Code", Consolas, "SF Mono", Monaco, monospace;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       background-color: var(--bg);
-      background-image: 
-        radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.12) 0px, transparent 50%),
-        radial-gradient(at 100% 0%, rgba(168, 85, 247, 0.12) 0px, transparent 50%),
-        radial-gradient(at 50% 100%, rgba(6, 182, 212, 0.08) 0px, transparent 50%);
-      background-attachment: fixed;
+      background-image: none;
       color: var(--text-main);
       font-family: var(--font-sans);
       min-height: 100vh;
       display: flex;
       flex-direction: column;
+      -webkit-font-smoothing: antialiased;
+      font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    }
+    .svg-icon {
+      display: inline-block;
+      vertical-align: middle;
+      flex-shrink: 0;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.65;
+      stroke-linecap: round;
+      stroke-linejoin: round;
     }
     header {
-      backdrop-filter: blur(20px);
-      background: rgba(9, 13, 22, 0.75);
+      background: rgba(10, 10, 11, 0.88);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
       border-bottom: 1px solid var(--card-border);
       position: sticky;
       top: 0;
       z-index: 50;
-      padding: 16px 32px;
+      padding: 11px 28px;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -4089,193 +4107,150 @@ HTML_PAGE = """<!DOCTYPE html>
     .logo-area {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
     }
     .logo-badge {
-      width: 40px;
-      height: 40px;
-      border-radius: 12px;
-      background: linear-gradient(135deg, #6366f1, #a855f7);
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      background: var(--surface-2);
+      border: 1px solid #2e2f36;
+      color: var(--text-main);
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 20px;
-      box-shadow: 0 8px 16px -4px rgba(99, 102, 241, 0.5);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
     }
     .logo-title {
-      font-size: 20px;
-      font-weight: 800;
-      letter-spacing: -0.5px;
-      background: linear-gradient(135deg, #ffffff 40%, #cbd5e1);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-    .logo-tag {
-      font-size: 11px;
-      font-weight: 700;
-      background: rgba(99, 102, 241, 0.15);
-      color: #818cf8;
-      border: 1px solid rgba(99, 102, 241, 0.3);
-      padding: 2px 8px;
-      border-radius: 999px;
-      margin-left: 6px;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      color: var(--text-main);
     }
     .nav-actions {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 8px;
     }
     .btn {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      padding: 8px 16px;
-      border-radius: 10px;
-      font-size: 13px;
-      font-weight: 600;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12.5px;
+      font-weight: 500;
       font-family: inherit;
       cursor: pointer;
       border: 1px solid transparent;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+      line-height: 1.3;
     }
     .btn-primary {
-      background: linear-gradient(135deg, #6366f1, #4f46e5);
-      color: white;
-      box-shadow: 0 4px 12px rgba(79, 70, 229, 0.35);
+      background: var(--accent-indigo);
+      color: #ffffff;
+      border-color: rgba(255, 255, 255, 0.1);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
     }
     .btn-primary:hover {
-      background: linear-gradient(135deg, #4f46e5, #4338ca);
-      transform: translateY(-1px);
-      box-shadow: 0 6px 16px rgba(79, 70, 229, 0.45);
+      background: var(--accent-indigo-hover);
     }
     .btn-secondary {
-      background: rgba(255, 255, 255, 0.05);
-      color: #cbd5e1;
+      background: var(--surface-2);
+      color: var(--text-secondary);
       border-color: var(--card-border);
     }
     .btn-secondary:hover {
-      background: rgba(255, 255, 255, 0.08);
-      color: white;
-      border-color: rgba(255, 255, 255, 0.2);
-    }
-    .container {
-      max-width: 1400px;
-      width: 100%;
-      margin: 0 auto;
-      padding: 28px 32px;
-      flex: 1;
-    }
-    /* Stats Bar */
-    .stats-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 16px;
-      margin-bottom: 28px;
-    }
-    .stat-card {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      backdrop-filter: blur(16px);
-      padding: 18px 22px;
-      border-radius: 16px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      transition: border-color 0.2s;
-    }
-    .stat-card:hover {
+      background: var(--surface-3);
+      color: var(--text-main);
       border-color: var(--card-hover-border);
     }
-    .stat-label {
-      font-size: 13px;
-      color: var(--text-muted);
-      font-weight: 500;
-      margin-bottom: 4px;
+    .container {
+      max-width: 1440px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 18px 28px 32px 28px;
+      flex: 1;
     }
-    .stat-val {
-      font-size: 26px;
-      font-weight: 800;
-      letter-spacing: -0.5px;
-    }
-    .stat-icon {
-      font-size: 28px;
-      opacity: 0.85;
-    }
-    /* Filter, Search & Sort Bar */
+    /* Filter, Search & Sort Bar (Linear Data-Dense Toolbar) */
     .toolbar {
-      background: var(--card-bg);
+      background: var(--surface-1);
       border: 1px solid var(--card-border);
-      backdrop-filter: blur(16px);
-      border-radius: 16px;
-      padding: 12px 18px;
+      border-radius: 8px;
+      padding: 9px 12px;
       display: flex;
       flex-wrap: wrap;
-      gap: 12px;
+      gap: 10px;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 22px;
-      box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.25);
+      margin-bottom: 16px;
     }
     .search-box {
-      flex: 1 1 220px;
+      flex: 1 1 240px;
       min-width: 200px;
       position: relative;
+      display: flex;
+      align-items: center;
     }
     .search-input {
       width: 100%;
-      background: rgba(0, 0, 0, 0.35);
+      background: var(--bg);
       border: 1px solid var(--card-border);
-      border-radius: 10px;
-      padding: 8px 14px 8px 36px;
-      color: white;
-      font-size: 13px;
+      border-radius: 6px;
+      padding: 6px 12px 6px 32px;
+      color: var(--text-main);
+      font-size: 12.5px;
       font-family: inherit;
       outline: none;
-      transition: all 0.2s;
+      transition: border-color 0.14s ease;
+    }
+    .search-input::placeholder {
+      color: var(--text-muted);
     }
     .search-input:focus {
       border-color: var(--accent-indigo);
-      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
     }
     .search-icon {
       position: absolute;
-      left: 12px;
+      left: 10px;
       top: 50%;
       transform: translateY(-50%);
       color: var(--text-muted);
-      font-size: 14px;
+      display: inline-flex;
+      align-items: center;
+      pointer-events: none;
     }
     .filter-chips {
       display: flex;
-      gap: 6px;
+      gap: 4px;
       flex-wrap: wrap;
       align-items: center;
     }
     .chip {
-      padding: 6px 11px;
-      border-radius: 8px;
+      padding: 4px 10px;
+      border-radius: 6px;
       font-size: 12px;
-      font-weight: 600;
-      background: rgba(255, 255, 255, 0.04);
+      font-weight: 500;
+      background: transparent;
       color: var(--text-muted);
-      border: 1px solid var(--card-border);
+      border: 1px solid transparent;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all 0.14s ease;
       user-select: none;
     }
     .chip:hover {
-      background: rgba(255, 255, 255, 0.08);
-      color: white;
+      background: var(--surface-2);
+      color: var(--text-main);
     }
     .chip.active {
-      background: rgba(99, 102, 241, 0.2);
-      color: #a5b4fc;
-      border-color: rgba(99, 102, 241, 0.45);
+      background: var(--surface-3);
+      color: var(--text-main);
+      border-color: #32343c;
     }
     .toolbar-sort-group {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       flex-wrap: nowrap;
     }
     .sort-select-wrapper {
@@ -4283,326 +4258,278 @@ HTML_PAGE = """<!DOCTYPE html>
       display: inline-flex;
       align-items: center;
     }
-    .sort-select-icon {
-      position: absolute;
-      left: 10px;
-      pointer-events: none;
-      font-size: 13px;
-      opacity: 0.85;
-      z-index: 1;
-    }
     .sort-select {
-      background: rgba(0, 0, 0, 0.4);
+      background: var(--bg);
       border: 1px solid var(--card-border);
-      color: #c4b5fd;
+      color: var(--text-secondary);
       font-size: 12px;
-      font-weight: 600;
-      padding: 7px 28px 7px 28px;
-      border-radius: 8px;
+      font-weight: 500;
+      padding: 5px 26px 5px 10px;
+      border-radius: 6px;
       cursor: pointer;
       outline: none;
       font-family: inherit;
-      transition: all 0.2s;
+      transition: border-color 0.14s ease, color 0.14s ease;
       appearance: none;
-      background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a78bfa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+      background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8a94' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
       background-repeat: no-repeat;
-      background-position: right 8px center;
-      background-size: 13px;
+      background-position: right 7px center;
+      background-size: 12px;
     }
     .sort-select:hover {
-      background-color: rgba(255, 255, 255, 0.08);
-      border-color: rgba(167, 139, 250, 0.45);
-      color: #e0e7ff;
+      border-color: var(--card-hover-border);
+      color: var(--text-main);
     }
     .sort-select:focus {
-      border-color: #a78bfa;
-      box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.2);
+      border-color: var(--accent-indigo);
     }
     .sort-select option,
     .sort-select optgroup {
-      background: #181824;
-      color: #f1f5f9;
-      font-size: 13px;
-    }
-    .sort-select optgroup {
-      color: #94a3b8;
-      font-weight: bold;
+      background: #141417;
+      color: var(--text-main);
+      font-size: 12.5px;
     }
     .sort-dir-quick-btn {
-      background: rgba(0, 0, 0, 0.4);
+      background: var(--bg);
       border: 1px solid var(--card-border);
-      color: #c4b5fd;
+      color: var(--text-secondary);
       font-size: 12px;
-      padding: 6px 9px;
-      border-radius: 8px;
+      padding: 5px 8px;
+      border-radius: 6px;
       cursor: pointer;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      transition: all 0.2s ease;
+      transition: all 0.14s ease;
       font-family: inherit;
+      min-height: 28px;
     }
     .sort-dir-quick-btn:hover {
-      background: rgba(167, 139, 250, 0.18);
-      border-color: rgba(167, 139, 250, 0.45);
-      color: #ffffff;
+      background: var(--surface-2);
+      border-color: var(--card-hover-border);
+      color: var(--text-main);
     }
     .results-stats-compact {
-      font-size: 11px;
+      font-size: 11.5px;
       color: var(--text-muted);
-      background: rgba(0, 0, 0, 0.3);
-      padding: 6px 11px;
-      border-radius: 8px;
-      border: 1px solid rgba(255, 255, 255, 0.06);
+      background: var(--bg);
+      padding: 5px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--card-border);
       user-select: none;
       white-space: nowrap;
+      font-variant-numeric: tabular-nums;
     }
     .stat-highlight {
-      color: #a5b4fc;
-      font-weight: 700;
+      color: var(--text-main);
+      font-weight: 600;
       font-family: var(--font-mono);
     }
     .stat-token-highlight {
-      color: #fbbf24;
+      color: #d4a359;
       cursor: help;
-      border-bottom: 1px dashed rgba(251, 191, 36, 0.45);
+      border-bottom: 1px dashed rgba(212, 163, 89, 0.4);
       padding-bottom: 1px;
     }
     .meta-token-badge {
-      color: #fcd34d;
-      background: rgba(245, 158, 11, 0.12);
-      border: 1px solid rgba(245, 158, 11, 0.28);
-      padding: 1px 7px;
-      border-radius: 6px;
+      color: #d4a359;
+      background: rgba(212, 163, 89, 0.08);
+      border: 1px solid rgba(212, 163, 89, 0.22);
+      padding: 1px 6px;
+      border-radius: 4px;
       font-family: var(--font-mono);
-      font-weight: 600;
+      font-weight: 500;
       cursor: help;
-      transition: all 0.2s ease;
+      transition: border-color 0.14s ease, background 0.14s ease;
     }
     .meta-token-badge:hover {
-      background: rgba(245, 158, 11, 0.22);
-      border-color: rgba(251, 191, 36, 0.6);
-      color: #fef3c7;
-      box-shadow: 0 0 10px rgba(245, 158, 11, 0.2);
+      background: rgba(212, 163, 89, 0.14);
+      border-color: rgba(212, 163, 89, 0.4);
     }
-    .search-input {
-      width: 100%;
-      background: rgba(0, 0, 0, 0.35);
-      border: 1px solid var(--card-border);
-      border-radius: 10px;
-      padding: 10px 16px 10px 40px;
-      color: white;
-      font-size: 14px;
-      font-family: inherit;
-      outline: none;
-      transition: all 0.2s;
-    }
-    .search-input:focus {
-      border-color: var(--accent-indigo);
-      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
-    }
-    .search-icon {
-      position: absolute;
-      left: 14px;
-      top: 50%;
-      transform: translateY(-50%);
-      color: var(--text-muted);
-      font-size: 16px;
-    }
-    .filter-chips {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .chip {
-      padding: 6px 14px;
-      border-radius: 8px;
-      font-size: 12px;
-      font-weight: 600;
-      background: rgba(255, 255, 255, 0.04);
-      color: var(--text-muted);
-      border: 1px solid var(--card-border);
-      cursor: pointer;
-      transition: all 0.2s;
-      user-select: none;
-    }
-    .chip:hover {
-      background: rgba(255, 255, 255, 0.08);
-      color: white;
-    }
-    .chip.active {
-      background: rgba(99, 102, 241, 0.2);
-      color: #a5b4fc;
-      border-color: rgba(99, 102, 241, 0.45);
-    }
-    /* Sessions Grid */
+    /* Sessions Grid (Data-Dense Cards) */
     .sessions-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
-      gap: 20px;
+      grid-template-columns: repeat(auto-fill, minmax(390px, 1fr));
+      gap: 12px;
     }
     .session-card {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
-      backdrop-filter: blur(16px);
-      border-radius: 18px;
-      padding: 22px;
+      border-radius: 8px;
+      padding: 15px 16px;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      transition: border-color 0.14s ease, background-color 0.14s ease;
       position: relative;
       overflow: hidden;
     }
-    .session-card::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 4px;
-      height: 100%;
-      background: var(--badge-gradient, var(--accent-indigo));
-    }
     .session-card:hover {
-      transform: translateY(-3px);
       border-color: var(--card-hover-border);
-      box-shadow: 0 16px 32px -8px rgba(0, 0, 0, 0.45);
+      background: #131316;
     }
     .card-top {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 14px;
+      margin-bottom: 9px;
+      gap: 8px;
     }
     .format-badge {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      padding: 4px 10px;
-      border-radius: 8px;
+      gap: 5px;
+      padding: 2px 7px;
+      border-radius: 4px;
       font-size: 11px;
-      font-weight: 700;
-      color: white;
+      font-weight: 600;
+      font-family: var(--font-mono);
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.03em;
+      background: var(--surface-2);
+      color: var(--text-secondary);
+      border: 1px solid #2a2b30;
+    }
+    .format-badge::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--agent-dot, #8a8a94);
+      display: inline-block;
     }
     .card-time {
-      font-size: 12px;
+      font-size: 11.5px;
       color: var(--text-muted);
       font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      margin-left: auto;
     }
     .card-title {
-      font-size: 16px;
-      font-weight: 700;
+      font-size: 14px;
+      font-weight: 600;
       line-height: 1.45;
-      margin-bottom: 12px;
-      color: #f8fafc;
+      margin-bottom: 10px;
+      color: var(--text-main);
       word-break: break-word;
       display: -webkit-box;
       -webkit-line-clamp: 2;
       -webkit-box-orient: vertical;
       overflow: hidden;
+      letter-spacing: -0.01em;
     }
     .card-meta {
       display: flex;
       align-items: center;
-      gap: 12px;
-      font-size: 12px;
+      gap: 6px 10px;
+      font-size: 11.5px;
       color: var(--text-muted);
-      margin-bottom: 18px;
+      margin-bottom: 13px;
       flex-wrap: wrap;
+      font-variant-numeric: tabular-nums;
     }
     .meta-item {
-      display: flex;
+      display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 4px;
+      font-family: var(--font-mono);
+    }
+    .meta-sep {
+      color: #34353c;
+      user-select: none;
     }
     .meta-copyable {
       cursor: pointer;
       user-select: none;
-      transition: all 0.2s ease;
-      padding: 2px 6px;
+      transition: color 0.14s ease, background 0.14s ease;
+      padding: 1px 5px;
       border-radius: 4px;
+      color: var(--text-muted);
     }
     .meta-copyable:hover {
-      background: rgba(255, 255, 255, 0.08);
-      color: var(--text-main, #f8fafc);
+      background: var(--surface-3);
+      color: var(--text-main);
     }
     .meta-path-link {
       cursor: pointer;
       user-select: none;
-      color: var(--primary-light, #c4b5fd);
+      color: var(--text-secondary);
       text-decoration: none;
-      transition: all 0.2s ease;
-      padding: 2px 6px;
+      transition: color 0.14s ease, background 0.14s ease;
+      padding: 1px 5px;
       border-radius: 4px;
       display: inline-flex;
       align-items: center;
       gap: 4px;
+      font-family: var(--font-sans);
     }
     .meta-path-link:hover {
-      background: rgba(167, 139, 250, 0.16);
-      color: #e0e7ff;
+      background: var(--surface-3);
+      color: var(--text-main);
     }
     .meta-path-link .path-label {
-      text-decoration: underline dotted;
+      text-decoration: underline dotted #52525b;
       text-underline-offset: 3px;
-      font-weight: 500;
     }
     .meta-path-link:hover .path-label {
-      text-decoration: underline solid;
+      text-decoration: underline solid var(--text-main);
     }
     .card-actions {
       display: flex;
       gap: 6px;
-      border-top: 1px solid rgba(255, 255, 255, 0.06);
-      padding-top: 14px;
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 11px;
     }
     .btn-action {
       flex: 1;
-      padding: 6px 8px;
+      padding: 5px 8px;
       font-size: 12px;
-      font-weight: 600;
-      border-radius: 8px;
+      font-weight: 500;
+      font-family: inherit;
+      border-radius: 6px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      gap: 4px;
-      background: rgba(255, 255, 255, 0.04);
-      color: #cbd5e1;
+      gap: 5px;
+      background: var(--surface-2);
+      color: var(--text-secondary);
       border: 1px solid var(--card-border);
       cursor: pointer;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      transition: all 0.14s ease;
       white-space: nowrap;
     }
     .btn-action:hover {
-      background: rgba(255, 255, 255, 0.09);
-      color: white;
-      border-color: rgba(255, 255, 255, 0.2);
+      background: var(--surface-3);
+      color: var(--text-main);
+      border-color: var(--card-hover-border);
     }
     .btn-action.btn-migrate {
-      background: rgba(99, 102, 241, 0.15);
-      color: #a5b4fc;
-      border-color: rgba(99, 102, 241, 0.35);
+      background: rgba(94, 106, 210, 0.1);
+      color: #9ba4ed;
+      border-color: rgba(94, 106, 210, 0.26);
     }
     .btn-action.btn-migrate:hover {
-      background: rgba(99, 102, 241, 0.25);
-      color: #c7d2fe;
-      border-color: rgba(99, 102, 241, 0.5);
+      background: rgba(94, 106, 210, 0.18);
+      color: #c4cbf7;
+      border-color: rgba(94, 106, 210, 0.45);
     }
     .btn-action.btn-delete {
-      background: rgba(244, 63, 94, 0.09);
-      color: #fda4af;
-      border-color: rgba(244, 63, 94, 0.28);
+      background: transparent;
+      color: var(--text-muted);
+      border-color: var(--card-border);
     }
     .btn-action.btn-delete:hover {
-      background: rgba(244, 63, 94, 0.22);
-      color: #fecdd3;
-      border-color: rgba(244, 63, 94, 0.5);
+      background: rgba(225, 29, 72, 0.12);
+      color: #fda4af;
+      border-color: rgba(225, 29, 72, 0.35);
     }
     .btn-action.btn-folder {
-      flex: 0 0 36px;
-      padding: 6px 0;
+      flex: 0 0 32px;
+      padding: 5px 0;
+      color: var(--text-muted);
+    }
+    .btn-action.btn-folder:hover {
+      color: var(--text-main);
     }
     /* Modal Styles */
     .data-source-notice {
@@ -4647,9 +4574,9 @@ HTML_PAGE = """<!DOCTYPE html>
       pointer-events: auto;
     }
     .modal-card {
-      background: #0f172a;
+      background: #111113;
       border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 20px;
+      border-radius: 10px;
       width: 100%;
       max-width: 800px;
       max-height: 85vh;
@@ -4699,7 +4626,7 @@ HTML_PAGE = """<!DOCTYPE html>
         /* Chat Modal Toolbar: Search & Navigation */
     .chat-modal-toolbar {
       padding: 10px 20px;
-      background: rgba(15, 23, 42, 0.98);
+      background: rgba(17, 17, 19, 0.98);
       border-bottom: 1px solid rgba(255, 255, 255, 0.1);
       display: flex;
       flex-wrap: wrap;
@@ -5672,9 +5599,9 @@ HTML_PAGE = """<!DOCTYPE html>
       width: 94vw;
       max-width: 1280px;
       height: 90vh;
-      background: rgba(15, 23, 42, 0.98);
+      background: rgba(17, 17, 19, 0.98);
       border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 18px;
+      border-radius: 10px;
       box-shadow: 0 25px 60px rgba(0, 0, 0, 0.8), 0 0 40px rgba(99, 102, 241, 0.12);
       display: flex;
       flex-direction: column;
@@ -5809,7 +5736,7 @@ HTML_PAGE = """<!DOCTYPE html>
     .cleanup-table th {
       position: sticky;
       top: 0;
-      background: #0f172a;
+      background: #111113;
       padding: 10px 12px;
       font-weight: 700;
       color: #94a3b8;
@@ -5856,7 +5783,7 @@ HTML_PAGE = """<!DOCTYPE html>
       bottom: 0;
       left: 0;
       right: 0;
-      background: rgba(15, 23, 42, 0.98);
+      background: rgba(17, 17, 19, 0.98);
       border-top: 1px solid rgba(255, 255, 255, 0.12);
       backdrop-filter: blur(16px);
       padding: 14px 24px;
@@ -5961,7 +5888,7 @@ HTML_PAGE = """<!DOCTYPE html>
       color: #93c5fd;
     }
     .md-code-block {
-      background: #090d16;
+      background: #0a0a0b;
       border: 1px solid rgba(255, 255, 255, 0.09);
       border-radius: 6px;
       margin: 10px 0;
@@ -6041,9 +5968,9 @@ HTML_PAGE = """<!DOCTYPE html>
       width: 920px;
       max-width: 95vw;
       max-height: 84vh;
-      background: #0f172a;
+      background: #111113;
       border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 18px;
+      border-radius: 10px;
       box-shadow: 0 25px 60px -12px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(99, 102, 241, 0.2);
       display: flex;
       flex-direction: column;
@@ -6085,7 +6012,7 @@ HTML_PAGE = """<!DOCTYPE html>
       align-items: center;
       gap: 14px;
       border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-      background: rgba(15, 23, 42, 0.75);
+      background: #141417;
       position: relative;
     }
     .global-search-input-wrap .search-icon {
@@ -6334,11 +6261,7 @@ HTML_PAGE = """<!DOCTYPE html>
       .container {
         padding: 18px 20px;
       }
-      .stats-grid {
-        grid-template-columns: repeat(2, 1fr);
-        gap: 12px;
-        margin-bottom: 20px;
-      }
+
       .sessions-grid {
         grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
         gap: 14px;
@@ -6684,100 +6607,74 @@ HTML_PAGE = """<!DOCTYPE html>
 <body>
   <header>
     <div class="logo-area">
-      <div class="logo-badge">⚡</div>
-      <div class="logo-title">Memory Tools</div>
-      <div class="logo-tag">WEB GUI</div>
+      <div class="logo-badge">
+        <svg class="svg-icon" width="15" height="15" viewBox="0 0 24 24">
+          <polyline points="4 17 10 11 4 5"></polyline>
+          <line x1="12" y1="19" x2="20" y2="19"></line>
+        </svg>
+      </div>
+      <div class="logo-title">Agents Memory Tools</div>
     </div>
     <div class="nav-actions">
       <button class="btn btn-secondary" onclick="openGlobalSearchModal()" title="全局跨会话对话内容全文检索 (快捷键: Ctrl+Shift+F)">
-        <span>🔍</span> <span><span class="desktop-only">对话内容</span>全盘检索</span>
+        <svg class="svg-icon" width="14" height="14" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        <span><span class="desktop-only">对话内容</span>全盘检索</span>
       </button>
       <button class="btn btn-secondary" onclick="openRootsModal()" title="管理智能体会话根目录">
-        <span>📂</span> <span><span class="desktop-only">扫描</span>目录管理</span>
+        <svg class="svg-icon" width="14" height="14" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+        <span><span class="desktop-only">扫描</span>目录管理</span>
       </button>
       <button class="btn btn-secondary" onclick="openCleanupDrawer()" title="进入会话批量管理控制台">
-        <span>🗂️</span> <span><span class="desktop-only">会话</span>批量管理</span>
+        <span><span class="desktop-only">会话</span>批量管理</span>
       </button>
       <button class="btn btn-primary" id="btnRefresh" onclick="refreshCatalog()" title="重新扫描并刷新所有智能体会话数据">
-        <span>🔄</span> <span>刷新<span class="desktop-only">会话</span>数据</span>
+        <span>刷新<span class="desktop-only">会话</span>数据</span>
       </button>
     </div>
   </header>
 
   <div class="container">
-    <!-- Stats Row -->
-    <div class="stats-grid">
-      <div class="stat-card">
-        <div>
-          <div class="stat-label">已收录会话总数</div>
-          <div class="stat-val" id="statTotalSessions">-</div>
-        </div>
-        <div class="stat-icon">💬</div>
-      </div>
-      <div class="stat-card">
-        <div>
-          <div class="stat-label">支持的智能体平台</div>
-          <div class="stat-val" id="statSupportedAgents">18 种</div>
-        </div>
-        <div class="stat-icon">🧩</div>
-      </div>
-      <div class="stat-card">
-        <div>
-          <div class="stat-label">已接入数据目录</div>
-          <div class="stat-val" id="statActiveRoots">-</div>
-        </div>
-        <div class="stat-icon">📁</div>
-      </div>
-      <div class="stat-card">
-        <div>
-          <div class="stat-label">跨工具一键互迁</div>
-          <div class="stat-val" style="color: var(--accent-emerald);">实时就绪</div>
-        </div>
-        <div class="stat-icon">🚀</div>
-      </div>
-    </div>
-
     <!-- Toolbar -->
     <div class="toolbar">
       <div class="search-box">
-        <span class="search-icon">🔍</span>
-        <input type="text" class="search-input" id="searchInput" placeholder="搜索清晰会话名称、UUID、编程智能体..." oninput="handleSearch()">
+        <span class="search-icon">
+          <svg class="svg-icon" width="14" height="14" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        </span>
+        <input type="text" class="search-input" id="searchInput" placeholder="搜索会话名称、UUID、编程智能体..." oninput="handleSearch()">
       </div>
 
       <div class="filter-chips" id="filterChips">
         <div class="chip active" data-fmt="all" onclick="filterByFormat('all')">全部</div>
-        <div class="chip" data-fmt="antigravity" onclick="filterByFormat('antigravity')">⚡ Antigravity</div>
-        <div class="chip" data-fmt="claude" onclick="filterByFormat('claude')">🟣 Claude Code</div>
-        <div class="chip" data-fmt="workbuddy" onclick="filterByFormat('workbuddy')">🤖 WorkBuddy</div>
-        <div class="chip" data-fmt="trae" onclick="filterByFormat('trae')">✨ Trae</div>
+        <div class="chip" data-fmt="antigravity" onclick="filterByFormat('antigravity')">Antigravity</div>
+        <div class="chip" data-fmt="claude" onclick="filterByFormat('claude')">Claude Code</div>
+        <div class="chip" data-fmt="workbuddy" onclick="filterByFormat('workbuddy')">WorkBuddy</div>
+        <div class="chip" data-fmt="trae" onclick="filterByFormat('trae')">Trae</div>
         <div class="chip" data-fmt="cursor" onclick="filterByFormat('cursor')">Cursor</div>
         <div class="chip" data-fmt="copilot" onclick="filterByFormat('copilot')">GitHub Copilot</div>
       </div>
 
       <div class="toolbar-sort-group">
         <div class="sort-select-wrapper">
-          <span class="sort-select-icon">🔀</span>
           <select class="sort-select" id="sortSelect" onchange="handleSortFieldChange(this.value)" title="选择会话排序依据">
-            <option value="mtime">🕒 最近活跃</option>
-            <option value="started_at">📅 创建时间</option>
-            <option value="bytes">💾 文件大小</option>
-            <option value="tokens">🪙 Token 数量</option>
-            <option value="records">🔢 交互步数</option>
-            <option value="title">🔤 标题名称</option>
-            <option value="format">🤖 平台类型</option>
+            <option value="mtime">最近活跃</option>
+            <option value="started_at">创建时间</option>
+            <option value="bytes">文件大小</option>
+            <option value="tokens">Token 数量</option>
+            <option value="records">交互步数</option>
+            <option value="title">标题名称</option>
+            <option value="format">平台类型</option>
           </select>
         </div>
         <button class="sort-dir-quick-btn" id="btnSortDirQuick" onclick="toggleSortOrderQuick()" title="点击一键反转升/降序">
-          <span id="sortDirQuickIcon">⬇️</span>
+          <span id="sortDirQuickIcon" style="display:inline-flex;align-items:center;">
+            <svg class="svg-icon" width="13" height="13" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>
+          </span>
         </button>
         <button class="sort-dir-quick-btn" id="btnFoldLineage" onclick="toggleFoldLineage()" title="折叠同一条对话的分叉快照（Antigravity 分叉/副本）" style="display: none;">
           <span>⧉</span>
         </button>
-        <button class="sort-dir-quick-btn" id="btnFoldSubagents" onclick="toggleFoldSubagents()" title="折叠子代理会话（默认仅保留主会话卡片）" style="display: none;">
-          <span>↳</span>
-        </button>
         <div class="results-stats-compact" id="resultsStats" title="当前匹配的会话统计">
-          <span class="stat-highlight" id="statMatchCount">0</span> 篇 · <span class="stat-highlight" id="statTotalSize">0 KB</span> · 🪙 <span class="stat-highlight stat-token-highlight" id="statTotalTokens">0 Tokens</span>
+          总收录 <span class="stat-highlight" id="statTotalSessions">-</span> · 匹配 <span class="stat-highlight" id="statMatchCount">0</span> 篇 · <span class="stat-highlight" id="statTotalSize">0 KB</span> · <span class="stat-highlight stat-token-highlight" id="statTotalTokens">0 Tokens</span>
         </div>
       </div>
     </div>
@@ -6793,7 +6690,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
   <!-- Chat Detail Modal -->
   <div class="modal-backdrop" id="chatModal">
-    <div class="modal-card" style="max-width: 950px; height: 88vh;">
+    <div class="modal-card" style="max-width: 960px; height: 88vh;">
       <div class="modal-header">
         <div>
           <div class="modal-title" id="chatModalTitle">会话详情预览</div>
@@ -6806,32 +6703,34 @@ HTML_PAGE = """<!DOCTYPE html>
       <!-- Chat Toolbar: Navigation & Fulltext Search -->
       <div class="chat-modal-toolbar">
         <div class="user-nav-group">
-          <span class="user-nav-label">👤 用户指令:</span>
+          <span class="user-nav-label">用户指令</span>
           <button class="nav-btn" id="btnPrevUserMsg" onclick="navigateUserMessage(-1)" title="跳转到上一条用户指令 (Alt+↑)">
-            ⬆️ 上一条
+            ↑ 上一条
           </button>
           <span class="nav-counter" id="userMsgCounter">0 / 0</span>
           <button class="nav-btn" id="btnNextUserMsg" onclick="navigateUserMessage(1)" title="跳转到下一条用户指令 (Alt+↓)">
-            下一条 ⬇️
+            下一条 ↓
           </button>
         </div>
 
         <div class="chat-search-group">
           <div class="chat-search-input-wrap">
-            <span class="search-mini-icon">🔍</span>
+            <span class="search-mini-icon" style="display:inline-flex;align-items:center;">
+              <svg class="svg-icon" width="12" height="12" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            </span>
             <input type="text" id="chatSearchInput" class="chat-search-input" placeholder="在全文中搜索 (Enter跳下一个)..." oninput="handleChatSearch()" onkeydown="handleChatSearchKey(event)">
             <button class="search-clear-btn" id="chatSearchClear" onclick="clearChatSearch()" title="清除搜索" style="display: none;">✕</button>
           </div>
           <div class="search-nav-controls" id="searchNavControls" style="display: none;">
             <span class="search-match-count" id="searchMatchCount">0/0</span>
-            <button class="nav-btn nav-btn-sm" onclick="navigateSearchMatch(-1)" title="上一个匹配项 (Shift+Enter)">⬆️</button>
-            <button class="nav-btn nav-btn-sm" onclick="navigateSearchMatch(1)" title="下一个匹配项 (Enter)">⬇️</button>
+            <button class="nav-btn nav-btn-sm" onclick="navigateSearchMatch(-1)" title="上一个匹配项 (Shift+Enter)">↑</button>
+            <button class="nav-btn nav-btn-sm" onclick="navigateSearchMatch(1)" title="下一个匹配项 (Enter)">↓</button>
           </div>
         </div>
 
         <div class="chat-toggle-group">
-          <button class="nav-btn nav-btn-toggle" onclick="toggleAllBubbles(false)" title="全部收起为极简摘要">📁 全部收起</button>
-          <button class="nav-btn nav-btn-toggle" onclick="toggleAllBubbles(true)" title="全部展开查看完整详情">📖 全部展开</button>
+          <button class="nav-btn nav-btn-toggle" onclick="toggleAllBubbles(false)" title="全部收起为极简摘要">全部收起</button>
+          <button class="nav-btn nav-btn-toggle" onclick="toggleAllBubbles(true)" title="全部展开查看完整详情">全部展开</button>
         </div>
       </div>
 
@@ -6839,10 +6738,10 @@ HTML_PAGE = """<!DOCTYPE html>
         <div style="text-align: center; padding: 40px; color: var(--text-muted);">加载对话流...</div>
       </div>
       <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
-        <button class="btn btn-delete" id="btnDeleteFromChat" style="background: rgba(244, 63, 94, 0.15); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.35); font-size: 12px; padding: 7px 14px; border-radius: 8px; cursor: pointer;">🗑️ 删除此会话</button>
-        <div style="display: flex; gap: 10px;">
+        <button class="btn btn-delete" id="btnDeleteFromChat" style="background: rgba(225, 29, 72, 0.12); color: #fda4af; border: 1px solid rgba(225, 29, 72, 0.3); font-size: 12px; padding: 6px 12px; border-radius: 6px; cursor: pointer;">删除此会话</button>
+        <div style="display: flex; gap: 8px;">
           <button class="btn btn-secondary" onclick="closeChatModal()">关闭</button>
-          <button class="btn btn-primary" id="btnMigrateFromChat">🚀 立即迁移此会话</button>
+          <button class="btn btn-primary" id="btnMigrateFromChat">迁移此会话</button>
         </div>
       </div>
     </div>
@@ -6864,8 +6763,8 @@ HTML_PAGE = """<!DOCTYPE html>
           <div class="target-grid" id="targetGrid">
             <!-- Populated via JS -->
           </div>
-          <div style="font-size: 11px; color: var(--text-muted); margin-top: -6px; margin-bottom: 14px; line-height: 1.5;">
-            💡 <strong>支持提示</strong>：已支持一键迁入 Antigravity IDE、WorkBuddy、Claude Code、Cursor、Copilot 等 13 种主流工具。<br>Trae / Trae SOLO 目前仅支持作为数据源被读取和迁出（由于 Trae 官方未提供公开的本地会话写入接口）。
+          <div style="font-size: 11.5px; color: var(--text-muted); margin-top: -4px; margin-bottom: 14px; line-height: 1.55;">
+            <strong>支持说明</strong>：已支持一键迁入 Antigravity IDE、WorkBuddy、Claude Code、Cursor、Copilot 等 13 种主流工具。<br>Trae / Trae SOLO 目前仅支持作为数据源被读取和迁出（由于 Trae 官方未提供公开的本地会话写入接口）。
           </div>
         </div>
 
@@ -6883,7 +6782,7 @@ HTML_PAGE = """<!DOCTYPE html>
           </div>
         </div>
 
-        <div id="migrateFeedback" style="display: none; padding: 14px; border-radius: 10px; margin-top: 16px; font-size: 13px;"></div>
+        <div id="migrateFeedback" style="display: none; padding: 12px 14px; border-radius: 6px; margin-top: 14px; font-size: 12.5px;"></div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" onclick="closeMigrateModal()">取消</button>
@@ -6901,14 +6800,14 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
       <div class="modal-body">
         <div style="margin-bottom: 20px;">
-          <h4 style="font-size: 14px; margin-bottom: 12px;">已接入的扫描目录列表：</h4>
-          <div id="rootsList" style="display: flex; flex-direction: column; gap: 8px;"></div>
+          <h4 style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 10px;">已接入的扫描目录列表：</h4>
+          <div id="rootsList" style="display: flex; flex-direction: column; gap: 6px;"></div>
         </div>
 
-        <div style="background: rgba(255, 255, 255, 0.03); padding: 16px; border-radius: 12px; border: 1px solid var(--card-border);">
-          <h4 style="font-size: 14px; margin-bottom: 12px;">添加新的扫描目录：</h4>
+        <div style="background: var(--surface-2); padding: 14px; border-radius: 8px; border: 1px solid var(--card-border);">
+          <h4 style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 10px;">添加新的扫描目录：</h4>
           <div class="new-root-form">
-            <select id="newRootFormat" class="search-input" style="padding: 8px 12px;">
+            <select id="newRootFormat" class="search-input" style="padding: 7px 10px;">
               <option value="antigravity">Antigravity</option>
               <option value="claude">Claude Code</option>
               <option value="cursor">Cursor</option>
@@ -6917,7 +6816,7 @@ HTML_PAGE = """<!DOCTYPE html>
               <option value="kimi">Kimi</option>
               <option value="devin">Devin</option>
             </select>
-            <input type="text" id="newRootPath" class="search-input" placeholder="输入绝对路径 (如 C:\\Users\\...)" style="padding: 8px 12px;">
+            <input type="text" id="newRootPath" class="search-input" placeholder="输入绝对路径 (如 C:\\Users\\...)" style="padding: 7px 10px;">
             <button class="btn btn-primary" onclick="addRoot()">添加</button>
           </div>
         </div>
@@ -6928,15 +6827,13 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
   </div>
 
-
   <!-- Cleanup Drawer Modal -->
   <div class="modal-backdrop" id="cleanupDrawerModal" onclick="if(event.target===this)closeCleanupDrawer()">
     <div class="cleanup-drawer-card">
       <div class="modal-header">
         <div>
           <div class="modal-title" style="display: flex; align-items: center; gap: 8px;">
-            <span>🧹</span> <span>会话批量管理</span>
-            <span class="logo-tag" style="background: rgba(236, 72, 153, 0.2); color: #f472b6; border-color: rgba(236, 72, 153, 0.4);">Memory Tools</span>
+            <span>会话批量管理</span>
           </div>
           <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">
             支持按平台类型、会话大小、对话步数、时间范围等多维复合多选筛选，一键彻底擦除文件或批量跨平台迁移
@@ -6950,8 +6847,8 @@ HTML_PAGE = """<!DOCTYPE html>
         <!-- 维度 1: 平台类型 (多选) -->
         <div class="matrix-col">
           <div class="matrix-label">
-            <span>💻 智能体平台</span>
-            <span style="font-size: 10px; color: var(--text-muted);">(可多选)</span>
+            <span>智能体平台</span>
+            <span style="font-size: 10px; color: var(--text-muted); font-weight: 400;">(可多选)</span>
           </div>
           <div class="matrix-options" id="filterMatrixFormats">
             <span class="matrix-opt active" data-fmt="all" onclick="toggleCleanupFilter('fmt', 'all')">全部平台</span>
@@ -6966,8 +6863,8 @@ HTML_PAGE = """<!DOCTYPE html>
         <!-- 维度 2: 存储大小 (自定义范围) -->
         <div class="matrix-col">
           <div class="matrix-label">
-            <span>📦 存储大小占用</span>
-            <span style="font-size: 10px; color: var(--text-muted);">(自定义范围)</span>
+            <span>存储大小占用</span>
+            <span style="font-size: 10px; color: var(--text-muted); font-weight: 400;">(自定义范围)</span>
           </div>
           <div class="custom-range-row">
             <input type="number" class="custom-input" id="cleanupMinSize" placeholder="最小值" min="0" step="any" oninput="applyCleanupFiltersAndRender()">
@@ -6984,21 +6881,21 @@ HTML_PAGE = """<!DOCTYPE html>
         <!-- 维度 3: 步数区间 (自定义范围) -->
         <div class="matrix-col">
           <div class="matrix-label">
-            <span>🔢 对话步数/轮数</span>
-            <span style="font-size: 10px; color: var(--text-muted);">(自定义步数)</span>
+            <span>对话步数/轮数</span>
+            <span style="font-size: 10px; color: var(--text-muted); font-weight: 400;">(自定义步数)</span>
           </div>
           <div class="custom-range-row">
             <input type="number" class="custom-input" id="cleanupMinSteps" placeholder="最少步数" min="0" step="1" oninput="applyCleanupFiltersAndRender()">
             <span class="range-sep">~</span>
             <input type="number" class="custom-input" id="cleanupMaxSteps" placeholder="最多步数" min="0" step="1" oninput="applyCleanupFiltersAndRender()">
-            <span class="range-sep" style="font-size: 11px; color: #94a3b8; margin-left: 2px;">步</span>
+            <span class="range-sep" style="font-size: 11px; color: var(--text-muted); margin-left: 2px;">步</span>
           </div>
         </div>
 
         <!-- 维度 4: 活跃时间跨度 (自定义条件) -->
         <div class="matrix-col">
           <div class="matrix-label">
-            <span>🕒 活跃时间跨度</span>
+            <span>活跃时间跨度</span>
             <button class="reset-filter-btn" onclick="resetCleanupFilters()" title="重置全部筛选条件">重置筛选</button>
           </div>
           <div class="custom-range-row">
@@ -7040,18 +6937,18 @@ HTML_PAGE = """<!DOCTYPE html>
       <!-- Sticky Bottom Action Bar -->
       <div class="cleanup-action-bar">
         <div class="action-stat-summary">
-          <div>筛选匹配: <span id="cleanupTotalCount" style="font-weight: 700; color: #a5b4fc;">0</span> 个会话</div>
-          <div style="opacity: 0.4;">|</div>
-          <div>已勾选: <span id="cleanupSelectedCount" style="font-weight: 800; color: #ffffff;">0</span> 个</div>
-          <div style="opacity: 0.4;">|</div>
+          <div>筛选匹配: <span id="cleanupTotalCount" style="font-weight: 600; color: var(--text-main);">0</span> 个会话</div>
+          <div style="opacity: 0.3;">|</div>
+          <div>已勾选: <span id="cleanupSelectedCount" style="font-weight: 600; color: var(--text-main);">0</span> 个</div>
+          <div style="opacity: 0.3;">|</div>
           <div>预计释放: <span id="cleanupSelectedSize" class="action-stat-highlight">0.0 MB</span></div>
         </div>
-        <div style="display: flex; align-items: center; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
           <button class="btn btn-secondary" onclick="openBatchMigrateModal()" id="btnBatchMigrate" disabled>
-            <span>🔄</span> <span>迁移</span>
+            <span>批量迁移</span>
           </button>
-          <button class="btn btn-danger" onclick="openBatchDeleteConfirm()" id="btnBatchDelete" disabled style="background: linear-gradient(135deg, #e11d48, #be123c); border-color: #f43f5e; color: #fff; font-weight: 700; box-shadow: 0 4px 14px rgba(225,29,72,0.35);">
-            <span>🗑️</span> <span>删除</span>
+          <button class="btn btn-danger" onclick="openBatchDeleteConfirm()" id="btnBatchDelete" disabled style="background: #be123c; border-color: #e11d48; color: #fff; font-weight: 500;">
+            <span>批量删除</span>
           </button>
         </div>
       </div>
@@ -7061,29 +6958,26 @@ HTML_PAGE = """<!DOCTYPE html>
   <!-- Safe Confirm Delete Modal -->
   <div class="modal-backdrop" id="batchDeleteConfirmModal" style="z-index: 120;" onclick="if(event.target===this)closeBatchDeleteConfirm()">
     <div class="safe-confirm-card">
-      <div style="padding: 24px;">
-        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
-          <div style="font-size: 28px;">⚠️</div>
-          <div>
-            <div style="font-size: 17px; font-weight: 800; color: #fecdd3;">确认批量彻底删除选中的会话？</div>
-            <div style="font-size: 12px; color: #94a3b8; margin-top: 3px;">此操作将永久抹除选中的历史会话与关联记忆数据，不可撤销！</div>
-          </div>
+      <div style="padding: 22px;">
+        <div style="margin-bottom: 14px;">
+          <div style="font-size: 16px; font-weight: 600; color: #fda4af;">确认批量彻底删除选中的会话？</div>
+          <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">此操作将永久抹除选中的历史会话与关联记忆数据，不可撤销。</div>
         </div>
 
-        <div style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 16px; margin-bottom: 20px;">
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 13px;">
-            <div>已选会话数: <strong id="confirmDelCount" style="color: #ffffff;">0</strong> 个</div>
+        <div style="background: var(--bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 14px; margin-bottom: 18px;">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 12.5px;">
+            <div>已选会话数: <strong id="confirmDelCount" style="color: var(--text-main);">0</strong> 个</div>
             <div>预计物理释放: <strong id="confirmDelSize" style="color: #fb7185;">0.0 MB</strong></div>
           </div>
-          <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); font-size: 11.5px; color: #cbd5e1; line-height: 1.6;" id="confirmDelBreakdown">
+          <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--card-border); font-size: 11.5px; color: var(--text-secondary); line-height: 1.6;" id="confirmDelBreakdown">
             <!-- 详细拆解 -->
           </div>
         </div>
 
-        <div style="display: flex; justify-content: flex-end; gap: 10px;">
+        <div style="display: flex; justify-content: flex-end; gap: 8px;">
           <button class="btn btn-secondary" onclick="closeBatchDeleteConfirm()">取消</button>
-          <button class="btn btn-danger" id="btnConfirmExecuteBatchDelete" onclick="executeBatchDeleteNow()" style="background: #e11d48; border-color: #f43f5e; color: #fff; font-weight: 700;">
-            💥 确认彻底删除并释放空间
+          <button class="btn btn-danger" id="btnConfirmExecuteBatchDelete" onclick="executeBatchDeleteNow()" style="background: #be123c; border-color: #e11d48; color: #fff; font-weight: 500;">
+            确认彻底删除并释放空间
           </button>
         </div>
       </div>
@@ -7094,17 +6988,17 @@ HTML_PAGE = """<!DOCTYPE html>
   <div class="modal-backdrop" id="batchMigrateSelectModal" style="z-index: 120;" onclick="if(event.target===this)closeBatchMigrateModal()">
     <div class="modal-card" style="max-width: 540px;">
       <div class="modal-header">
-        <div class="modal-title">🔄 批量跨平台迁移</div>
+        <div class="modal-title">批量跨平台迁移</div>
         <button class="modal-close" onclick="closeBatchMigrateModal()">✕</button>
       </div>
       <div class="modal-body">
-        <div style="font-size: 13px; color: #cbd5e1; margin-bottom: 14px;">
-          已勾选 <strong id="batchMigrateCount" style="color: #a5b4fc;">0</strong> 个会话。请选择要转换导出的目标智能体平台：
+        <div style="font-size: 12.5px; color: var(--text-secondary); margin-bottom: 14px;">
+          已勾选 <strong id="batchMigrateCount" style="color: var(--text-main);">0</strong> 个会话。请选择要转换导出的目标智能体平台：
         </div>
         <div class="target-grid" id="batchTargetGrid">
           <!-- 动态渲染目标平台选择 -->
         </div>
-        <div id="batchMigrateFeedback" style="display: none; margin-top: 14px; padding: 12px; border-radius: 8px; font-size: 12px;"></div>
+        <div id="batchMigrateFeedback" style="display: none; margin-top: 14px; padding: 12px; border-radius: 6px; font-size: 12px;"></div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" onclick="closeBatchMigrateModal()">取消</button>
@@ -7130,7 +7024,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="md-code-block">
               <div class="md-code-header">
                 <span class="md-code-lang">${escapeHtml(language)}</span>
-                <button class="track-mini-btn" onclick="copyCodeBlock(this, event)" title="复制代码块">📋 复制</button>
+                <button class="track-mini-btn" onclick="copyCodeBlock(this, event)" title="复制代码块">复制</button>
               </div>
               <pre><code class="language-${escapeHtml(language)}">${escapeHtml(text)}</code></pre>
             </div>
@@ -7162,7 +7056,7 @@ HTML_PAGE = """<!DOCTYPE html>
       const text = codeEl.textContent;
       navigator.clipboard.writeText(text).then(() => {
         const orig = btn.innerText;
-        btn.innerText = '✅ 已复制';
+        btn.innerText = '✓ 已复制';
         setTimeout(() => { btn.innerText = orig; }, 1500);
       });
     }
@@ -7184,20 +7078,19 @@ HTML_PAGE = """<!DOCTYPE html>
     let allSessions = [];
     let currentFilterFmt = 'all';
     let foldLineage = false;   // 是否折叠同源分叉快照
-    let foldSubagents = true;  // 是否折叠子代理会话（默认折叠，主看板仅保留父会话）
     let activeMigrateSession = null;
     let selectedTargetFormat = 'claude';
 
     const AGENT_COLORS = {
-      antigravity: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-      claude: 'linear-gradient(135deg, #d97706, #ea580c)',
-      workbuddy: 'linear-gradient(135deg, #059669, #10b981)',
-      trae: 'linear-gradient(135deg, #8b5cf6, #ec4899)',
-      cursor: 'linear-gradient(135deg, #0d9488, #059669)',
-      copilot: 'linear-gradient(135deg, #2563eb, #3b82f6)',
-      codex: 'linear-gradient(135deg, #475569, #334155)',
-      kimi: 'linear-gradient(135deg, #7c3aed, #a855f7)',
-      devin: 'linear-gradient(135deg, #ec4899, #f43f5e)'
+      antigravity: '#818cf8',
+      claude: '#f59e0b',
+      workbuddy: '#10b981',
+      trae: '#a855f7',
+      cursor: '#14b8a6',
+      copilot: '#3b82f6',
+      codex: '#94a3b8',
+      kimi: '#c084fc',
+      devin: '#f43f5e'
     };
 
     function showToast(msg) {
@@ -7229,8 +7122,10 @@ HTML_PAGE = """<!DOCTYPE html>
       try {
         const res = await fetch('/api/status');
         appStatus = await res.json();
-        document.getElementById('statTotalSessions').innerText = appStatus.total_sessions;
-        document.getElementById('statActiveRoots').innerText = appStatus.roots.length;
+        const totalEl = document.getElementById('statTotalSessions');
+        if (totalEl) totalEl.innerText = appStatus.total_sessions;
+        const rootsEl = document.getElementById('statActiveRoots');
+        if (rootsEl) rootsEl.innerText = appStatus.roots.length;
         renderTargetGrid();
       } catch (e) {
         console.error(e);
@@ -7281,7 +7176,9 @@ HTML_PAGE = """<!DOCTYPE html>
       const btn = document.getElementById('btnSortDirQuick');
       if (icon && btn) {
         const isDesc = (currentSortOrder === 'desc');
-        icon.innerText = isDesc ? '⬇️' : '⬆️';
+        icon.innerHTML = isDesc
+          ? '<svg class="svg-icon" width="13" height="13" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>'
+          : '<svg class="svg-icon" width="13" height="13" viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>';
         btn.title = isDesc ? '当前：降序 (点击切换为升序)' : '当前：升序 (点击切换为降序)';
       }
     }
@@ -7393,30 +7290,19 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function applySortAndRender() {
       const branchCount = (allSessions || []).filter(s => s.is_lineage_branch).length;
-      const childCount = (allSessions || []).filter(s => s.is_child).length;
       const foldBtn = document.getElementById('btnFoldLineage');
       if (foldBtn) {
         foldBtn.style.display = branchCount ? '' : 'none';
         foldBtn.classList.toggle('active', foldLineage);
         foldBtn.title = `折叠同一条对话的分叉快照（当前 ${branchCount} 个副本，多为 Antigravity 分叉/恢复产生）`;
       }
-      const subagentBtn = document.getElementById('btnFoldSubagents');
-      if (subagentBtn) {
-        subagentBtn.style.display = childCount ? '' : 'none';
-        subagentBtn.classList.toggle('active', foldSubagents);
-        subagentBtn.title = foldSubagents
-          ? `已折叠 ${childCount} 个子代理会话（点击展开全部）`
-          : `点击折叠 ${childCount} 个子代理会话`;
-      }
       const searchVal = (document.getElementById('searchInput')?.value || '').trim().toLowerCase();
       const base = (allSessions || []).filter(s => {
         // 1. Lineage fold filter
         if (foldLineage && s.is_lineage_branch) return false;
 
-        // 2. Subagents fold filter:
-        // When foldSubagents is active, child sessions NEVER appear as standalone root grid cards.
-        // They are indexed inside the parent card's dropdown drawer.
-        if (foldSubagents && s.is_child) return false;
+        // 2. Child sessions are permanently folded into parent card's dropdown drawer
+        if (s.is_child) return false;
 
         // 3. Search query filter (In-memory fast match)
         if (searchVal) {
@@ -7451,12 +7337,6 @@ HTML_PAGE = """<!DOCTYPE html>
       showToast(foldLineage ? '已折叠同源分叉副本，只保留主快照' : '已展开全部同源分支');
     }
 
-    function toggleFoldSubagents() {
-      foldSubagents = !foldSubagents;
-      applySortAndRender();
-      showToast(foldSubagents ? '已折叠子代理会话，主看板仅保留父会话' : '已展开全部子代理会话');
-    }
-
     function toggleCardChildren(cid, event) {
       if (event) event.stopPropagation();
       const drawer = document.getElementById('drawer-' + cid);
@@ -7484,6 +7364,8 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     }
 
+    const FOLDER_SVG_ICON = '<svg class="svg-icon" width="13" height="13" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>';
+
     function renderDrawerChildren(parentSession) {
       const children = parentSession.children || [];
       if (!children.length) return '';
@@ -7499,29 +7381,35 @@ HTML_PAGE = """<!DOCTYPE html>
                 <span class="child-time">${timeStr}</span>
               </div>
               <div class="drawer-child-metrics">
-                <span>🔢 ${c.records} 步</span>
-                <span>📦 ${sizeStr}</span>
-                <span style="color: #fbbf24;">🪙 ${tokLabel}</span>
+                <span>${c.records} 步</span>
+                <span class="meta-sep">·</span>
+                <span>${sizeStr}</span>
+                <span class="meta-sep">·</span>
+                <span style="color: #d4a359;">${tokLabel}</span>
               </div>
               <div class="drawer-child-actions">
-                <button class="child-btn-view" onclick="openChatModal('${c.catalog_id}')" title="直接查看该子代理会话历史">👁️ 查看</button>
+                <button class="child-btn-view" onclick="openChatModal('${c.catalog_id}')" title="直接查看该子代理会话历史">查看</button>
                 <button class="child-btn-expand" id="expandBtn-${c.catalog_id}" onclick="toggleChildInlineCard('${c.catalog_id}', event)" title="就地展开完整卡片与操作按钮">展开卡片 ▾</button>
               </div>
             </div>
             <div class="child-inline-card" id="inlineCard-${c.catalog_id}" style="display: none;">
               <div class="child-card-title">${escapeHtml(c.title || c.session_id)}</div>
               <div class="child-card-meta">
-                <span>🔢 ${c.records} 步</span>
-                <span>📦 ${sizeStr}</span>
-                <span>🪙 ${Number(c.tokens || 0).toLocaleString()} Tokens</span>
-                <span class="meta-copyable" data-id="${escapeHtml(c.session_id)}" onclick="copySessionId(this, event)" title="点击复制 UUID: ${escapeHtml(c.session_id)}">🆔 ${(c.session_id || '').slice(0, 8)}...</span>
-                <a href="javascript:void(0)" class="meta-path-link" data-path="${escapeHtml(c.file_path)}" onclick="copySessionPath(this, event); return false;" title="绝对路径: ${escapeHtml(c.file_path)} (点击复制)">📄 路径</a>
+                <span>${c.records} 步</span>
+                <span class="meta-sep">·</span>
+                <span>${sizeStr}</span>
+                <span class="meta-sep">·</span>
+                <span>${Number(c.tokens || 0).toLocaleString()} Tokens</span>
+                <span class="meta-sep">·</span>
+                <span class="meta-copyable" data-id="${escapeHtml(c.session_id)}" onclick="copySessionId(this, event)" title="点击复制 UUID: ${escapeHtml(c.session_id)}"><span class="id-label">${(c.session_id || '').slice(0, 8)}...</span></span>
+                <span class="meta-sep">·</span>
+                <a href="javascript:void(0)" class="meta-path-link" data-path="${escapeHtml(c.file_path)}" onclick="copySessionPath(this, event); return false;" title="绝对路径: ${escapeHtml(c.file_path)} (点击复制)"><span class="path-label">绝对路径</span></a>
               </div>
               <div class="child-card-actions">
-                <button class="btn-action" onclick="openChatModal('${c.catalog_id}')" title="查看该子会话详细交互">👁️ 查看详情</button>
-                <button class="btn-action btn-migrate" onclick="openMigrateModal('${c.catalog_id}')" title="跨平台迁移该会话">🔄 迁移</button>
-                <button class="btn-action btn-delete" onclick="confirmDeleteSession('${c.catalog_id}')" title="删除该子代理会话">🗑️ 删除</button>
-                <button class="btn-action btn-folder" data-path="${escapeHtml(c.file_path)}" onclick="openSessionFolder(this, event)" title="打开文件目录">📂</button>
+                <button class="btn-action" onclick="openChatModal('${c.catalog_id}')" title="查看该子会话详细交互">查看详情</button>
+                <button class="btn-action btn-migrate" onclick="openMigrateModal('${c.catalog_id}')" title="跨平台迁移该会话">迁移</button>
+                <button class="btn-action btn-delete" onclick="confirmDeleteSession('${c.catalog_id}')" title="删除该子代理会话">删除</button>
+                <button class="btn-action btn-folder" data-path="${escapeHtml(c.file_path)}" onclick="openSessionFolder(this, event)" title="打开文件目录">${FOLDER_SVG_ICON}</button>
               </div>
             </div>
           </div>
@@ -7536,7 +7424,7 @@ HTML_PAGE = """<!DOCTYPE html>
         return;
       }
       grid.innerHTML = list.map(s => {
-        const bg = AGENT_COLORS[s.format] || 'linear-gradient(135deg, #64748b, #475569)';
+        const dotColor = AGENT_COLORS[s.format] || '#8a8a94';
         const dateStr = s.started_at ? s.started_at.replace('T', ' ').slice(0, 16) : '未知时间';
         const sizeStr = (s.bytes / 1024).toFixed(1) + ' KB';
         const tokTotal = Number(s.tokens) || 0;
@@ -7550,32 +7438,34 @@ HTML_PAGE = """<!DOCTYPE html>
           ? `真实用量（客户端自身记录）&#10;• 计费总量: ${tokTotal.toLocaleString()} Tokens&#10;• 输入（上下文累计）: ${tokIn.toLocaleString()} Tokens&#10;• 输出（含思考）: ${tokOut.toLocaleString()} Tokens&#10;• 思考: ${tokThink.toLocaleString()} Tokens&#10;• 内容体积（去重）: ${tokContent.toLocaleString()} Tokens`
           : `估算用量（客户端未记录，按内容体积分词）&#10;• 内容体积: ${tokTotal.toLocaleString()} Tokens&#10;• 实际计费通常为其数倍：每轮对话都会重发整段上下文`;
         return `
-          <div class="session-card ${s.is_lineage_branch ? 'is-branch' : ''} ${s.is_child ? 'is-child-card' : ''}" style="--badge-gradient: ${bg};" id="card-${s.catalog_id}">
+          <div class="session-card ${s.is_lineage_branch ? 'is-branch' : ''}" id="card-${s.catalog_id}">
             <div>
               <div class="card-top">
-                <span class="format-badge" style="background: ${bg};">${s.format}</span>
-                ${s.is_child
-                  ? `<span class="lineage-badge is-child" title="归属于父会话: ${escapeHtml(s.parent_title || s.parent_id || '')}">↳ ${escapeHtml(s.agent_name || '子代理')}</span>`
-                  : (s.is_lineage_branch
-                      ? `<span class="lineage-badge ${s.side_question ? 'is-btw' : ''}" title="${s.side_question ? '用 /btw 侧边提问时，Antigravity 复制整段历史另开会话保存这条旁问：' + escapeHtml(s.side_question) : '与「' + escapeHtml(s.lineage_head_title || '') + '」是同一条对话；Antigravity 分叉/恢复时整段复制出的旧快照（主副本 ' + (s.lineage_head_steps || '?') + ' 步）'}">↳ ${escapeHtml(s.branch_label || '同源分支')}</span>`
-                      : (s.lineage_size > 1
-                          ? `<span class="lineage-badge is-head" title="这条对话另有 ${s.lineage_size - 1} 个分叉副本占用磁盘">⧉ ${s.lineage_size} 个分叉</span>`
-                          : ''))}
+                <span class="format-badge" style="--agent-dot: ${dotColor};">${s.format}</span>
+                ${s.is_lineage_branch
+                  ? `<span class="lineage-badge ${s.side_question ? 'is-btw' : ''}" title="${s.side_question ? '用 /btw 侧边提问时，Antigravity 复制整段历史另开会话保存这条旁问：' + escapeHtml(s.side_question) : '与「' + escapeHtml(s.lineage_head_title || '') + '」是同一条对话；Antigravity 分叉/恢复时整段复制出的旧快照（主副本 ' + (s.lineage_head_steps || '?') + ' 步）'}">↳ ${escapeHtml(s.branch_label || '同源分支')}</span>`
+                  : (s.lineage_size > 1
+                      ? `<span class="lineage-badge is-head" title="这条对话另有 ${s.lineage_size - 1} 个分叉副本占用磁盘">⧉ ${s.lineage_size} 个分叉</span>`
+                      : '')}
                 <span class="card-time">${dateStr}</span>
               </div>
               <div class="card-title" title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</div>
               ${s.side_question
-                ? `<div class="card-sideq" title="这条会话是一次 /btw 侧边提问：${escapeHtml(s.side_question)}">💬 旁问：${escapeHtml(s.side_question)}</div>`
+                ? `<div class="card-sideq" title="这条会话是一次 /btw 侧边提问：${escapeHtml(s.side_question)}">旁问：${escapeHtml(s.side_question)}</div>`
                 : ''}
               <div class="card-meta">
-                <div class="meta-item"><span>🔢</span> <span>${s.records} 步</span></div>
-                <div class="meta-item"><span>📦</span> <span>${sizeStr}</span></div>
-                <div class="meta-item meta-token-badge" title="${tokenTip}"><span>🪙</span> <span>${tokenLabel}</span></div>
+                <div class="meta-item"><span>${s.records} 步</span></div>
+                <span class="meta-sep">·</span>
+                <div class="meta-item"><span>${sizeStr}</span></div>
+                <span class="meta-sep">·</span>
+                <div class="meta-item meta-token-badge" title="${tokenTip}"><span>${tokenLabel}</span></div>
+                <span class="meta-sep">·</span>
                 <div class="meta-item meta-copyable" data-id="${escapeHtml(s.session_id)}" onclick="copySessionId(this, event)" title="点击复制 UUID: ${escapeHtml(s.session_id)}">
-                  <span>🆔</span> <span class="id-label" style="font-family: var(--font-mono);">${(s.session_id || '').slice(0, 8)}...</span>
+                  <span class="id-label">${(s.session_id || '').slice(0, 8)}...</span>
                 </div>
+                <span class="meta-sep">·</span>
                 <a href="javascript:void(0)" class="meta-item meta-path-link" data-path="${escapeHtml(s.file_path)}" onclick="copySessionPath(this, event); return false;" title="绝对路径: ${escapeHtml(s.file_path)} (点击复制)">
-                  <span>📄</span> <span class="path-label">绝对路径</span>
+                  <span class="path-label">绝对路径</span>
                 </a>
                 ${s.children_count > 0 ? `
                   <button class="meta-item meta-child-toggle" id="childToggle-${s.catalog_id}" onclick="toggleCardChildren('${s.catalog_id}', event)" title="点击展开/收起下属 ${s.children_count} 个子代理会话">
@@ -7595,10 +7485,10 @@ HTML_PAGE = """<!DOCTYPE html>
               ` : ''}
             </div>
             <div class="card-actions">
-              <button class="btn-action" onclick="openChatModal('${s.catalog_id}')" title="查看会话消息历史">👁️ 查看</button>
-              <button class="btn-action btn-migrate" onclick="openMigrateModal('${s.catalog_id}')" title="跨平台迁移该会话">🔄 迁移</button>
-              <button class="btn-action btn-delete" onclick="confirmDeleteSession('${s.catalog_id}')" title="一键彻底删除该会话所有文件以释放存储空间">🗑️ 删除</button>
-              <button class="btn-action btn-folder" data-path="${escapeHtml(s.file_path)}" onclick="openSessionFolder(this, event)" title="打开对应资源管理器并选中文件">📂</button>
+              <button class="btn-action" onclick="openChatModal('${s.catalog_id}')" title="查看会话消息历史">查看</button>
+              <button class="btn-action btn-migrate" onclick="openMigrateModal('${s.catalog_id}')" title="跨平台迁移该会话">迁移</button>
+              <button class="btn-action btn-delete" onclick="confirmDeleteSession('${s.catalog_id}')" title="一键彻底删除该会话所有文件以释放存储空间">删除</button>
+              <button class="btn-action btn-folder" data-path="${escapeHtml(s.file_path)}" onclick="openSessionFolder(this, event)" title="打开对应资源管理器并选中文件">${FOLDER_SVG_ICON}</button>
             </div>
           </div>
         `;
@@ -7607,26 +7497,26 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function renderTargetGrid() {
       const targets = [
-        { id: 'antigravity', name: 'Antigravity IDE', icon: '⚡' },
-        { id: 'claude', name: 'Claude Code', icon: '🟣' },
-        { id: 'workbuddy', name: 'WorkBuddy', icon: '🤖' },
-        { id: 'cursor', name: 'Cursor', icon: '🖱️' },
-        { id: 'copilot', name: 'GitHub Copilot', icon: '🐙' },
-        { id: 'codex', name: 'Codex', icon: '📜' },
-        { id: 'kimi', name: 'Kimi Code', icon: '🌙' },
-        { id: 'devin', name: 'Devin', icon: '🚀' },
-        { id: 'openhands', name: 'OpenHands', icon: '🦾' },
-        { id: 'grok', name: 'Grok', icon: '🌐' },
-        { id: 'hermes', name: 'Hermes', icon: '🦅' },
-        { id: 'mastracode', name: 'MastraCode', icon: '🧩' },
-        { id: 'vibe', name: 'Vibe', icon: '🌊' },
+        { id: 'antigravity', name: 'Antigravity IDE' },
+        { id: 'claude', name: 'Claude Code' },
+        { id: 'workbuddy', name: 'WorkBuddy' },
+        { id: 'cursor', name: 'Cursor' },
+        { id: 'copilot', name: 'GitHub Copilot' },
+        { id: 'codex', name: 'Codex' },
+        { id: 'kimi', name: 'Kimi Code' },
+        { id: 'devin', name: 'Devin' },
+        { id: 'openhands', name: 'OpenHands' },
+        { id: 'grok', name: 'Grok' },
+        { id: 'hermes', name: 'Hermes' },
+        { id: 'mastracode', name: 'MastraCode' },
+        { id: 'vibe', name: 'Vibe' },
       ];
       const grid = document.getElementById('targetGrid');
       grid.innerHTML = targets.map(t => `
         <div class="target-card ${t.id === selectedTargetFormat ? 'selected' : ''}" onclick="selectTargetFormat('${t.id}')">
-          <span style="font-size: 20px;">${t.icon}</span>
           <div>
-            <div style="font-size: 13px; font-weight: 700;">${t.name}</div>
+            <div style="font-size: 12.5px; font-weight: 600; color: var(--text-main);">${t.name}</div>
+            <div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 2px;">${t.id}</div>
           </div>
         </div>
       `).join('');
@@ -7652,7 +7542,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
     async function refreshCatalog() {
       const btn = document.getElementById('btnRefresh');
-      btn.innerText = '⏳ 正在扫描...';
+      btn.innerHTML = '<span>正在扫描...</span>';
       btn.disabled = true;
       try {
         const res = await fetch('/api/catalog/refresh', { method: 'POST' });
@@ -7667,7 +7557,7 @@ HTML_PAGE = """<!DOCTYPE html>
       } catch (e) {
         showToast(`网络异常: ${e}`);
       } finally {
-        btn.innerText = '🔄 全量重新索引';
+        btn.innerHTML = '<span>刷新<span class="desktop-only">会话</span>数据</span>';
         btn.disabled = false;
       }
     }
@@ -7814,9 +7704,9 @@ HTML_PAGE = """<!DOCTYPE html>
           const firstHeader = lines.find(l => l.startsWith('#')) || lines[0] || '';
           const cleanHeader = firstHeader.replace(/^#+\\s*/, '').replace(/[*_`]/g, '');
           return {
-            category: '💻 终端命令',
+            category: '终端命令',
             badgeClass: 'badge-command',
-            badgeText: '💻 任务规划',
+            badgeText: '任务规划',
             summary: `${cleanHeader} (${lines.length} 行清单)`,
             isError,
             totalChars,
@@ -7842,9 +7732,9 @@ HTML_PAGE = """<!DOCTYPE html>
         }
         const shortCmd = cmd.replace(/\\s+/g, ' ').slice(0, 58);
         return {
-          category: '💻 终端命令',
+          category: '终端命令',
           badgeClass: 'badge-command',
-          badgeText: '💻 终端命令',
+          badgeText: '终端命令',
           summary: shortCmd ? `${desc} ｜ ${shortCmd}${cmd.length > 58 ? '…' : ''}` : desc,
           isError,
           totalChars,
@@ -7864,9 +7754,9 @@ HTML_PAGE = """<!DOCTYPE html>
         const target = String(inputObj.url || inputObj.Url || inputObj.query || inputObj.Query || inputObj.Prompt || '').trim();
         const shortTarget = target.replace(/\\s+/g, ' ').slice(0, 62);
         return {
-          category: '🌐 网页访问',
+          category: '网页访问',
           badgeClass: 'badge-web',
-          badgeText: '🌐 网页访问',
+          badgeText: '网页访问',
           summary: `${actionDesc || (toolName.includes('search') ? '检索网页信息' : '访问网页内容')}${shortTarget ? ' · ' + shortTarget + (target.length > 62 ? '…' : '') : ''}`,
           isError,
           totalChars,
@@ -7883,7 +7773,7 @@ HTML_PAGE = """<!DOCTYPE html>
         toolName.includes('modify') || toolName.includes('create_file')
       ) {
         const isEdit = toolName.includes('edit') || toolName.includes('replace') || toolName.includes('patch');
-        const label = isEdit ? '✏️ 文件修改' : '📝 文件写入';
+        const label = isEdit ? '文件修改' : '文件写入';
         const fn = fileName || '文件';
         const directCode = inputObj.CodeContent || inputObj.Content || inputObj.content || '';
         const oldStr = inputObj.TargetContent || inputObj.Target || inputObj.old_string || '';
@@ -7930,9 +7820,9 @@ HTML_PAGE = """<!DOCTYPE html>
         const lineRange = (sLine && eLine) ? `第 ${sLine}-${eLine} 行` : (sLine ? `第 ${sLine} 行起` : '');
         const info = [lineRange, actionDesc].filter(Boolean).join(' · ');
         return {
-          category: '📖 查阅文件',
+          category: '查阅文件',
           badgeClass: 'badge-file',
-          badgeText: '📖 查阅文件',
+          badgeText: '查阅文件',
           summary: `查阅文件 · ${fn}${info ? ` (${info})` : ''}`,
           isError,
           totalChars,
@@ -7952,9 +7842,9 @@ HTML_PAGE = """<!DOCTYPE html>
         const dn = fileName || filePath || '工作区目录';
         const isGlob = toolName.includes('glob') || Boolean(pat);
         return {
-          category: '📁 浏览目录',
+          category: '浏览目录',
           badgeClass: 'badge-tool',
-          badgeText: isGlob ? '🗂️ 文件匹配' : '📁 浏览目录',
+          badgeText: isGlob ? '文件匹配' : '浏览目录',
           summary: isGlob
             ? `按模式匹配文件 · ${pat || dn}${filePath && pat ? ' @ ' + dn : ''}`
             : `浏览目录 · ${dn}/${actionDesc ? ` (${actionDesc})` : ''}`,
@@ -7970,9 +7860,9 @@ HTML_PAGE = """<!DOCTYPE html>
       if (toolName.includes('search') || toolName.includes('grep') || toolName.includes('find')) {
         const q = String(inputObj.query || inputObj.Query || inputObj.pattern || inputObj.SearchTerm || inputObj.regex || '').trim();
         return {
-          category: '🔍 代码检索',
+          category: '代码检索',
           badgeClass: 'badge-search',
-          badgeText: '🔍 代码检索',
+          badgeText: '代码检索',
           summary: `检索代码库 · 关键词 "${q.slice(0, 42)}${q.length > 42 ? '…' : ''}"${fileName ? ' @ ' + fileName : ''}`,
           isError,
           totalChars,
@@ -7987,9 +7877,9 @@ HTML_PAGE = """<!DOCTYPE html>
         const role = String(inputObj.Role || inputObj.TypeName || inputObj.subagent_type || inputObj.description || '子智能体').trim();
         const prompt = String(inputObj.Prompt || inputObj.prompt || '').replace(/\\s+/g, ' ').slice(0, 45);
         return {
-          category: '🤖 调度智能体',
+          category: '调度智能体',
           badgeClass: 'badge-assistant',
-          badgeText: '🤖 调度智能体',
+          badgeText: '调度智能体',
           summary: `派发子任务 · [${role}] ${prompt}${prompt.length >= 45 ? '…' : ''}`,
           isError,
           totalChars,
@@ -8010,9 +7900,9 @@ HTML_PAGE = """<!DOCTYPE html>
             qPreview = String(inputObj.questions[0].question || '').trim();
           }
           return {
-            category: '💬 交互提问',
+            category: '交互提问',
             badgeClass: 'badge-assistant',
-            badgeText: '💬 交互提问',
+            badgeText: '交互提问',
             summary: `向用户发起问题确认${qPreview ? ' · ' + qPreview.slice(0, 48) + (qPreview.length > 48 ? '…' : '') : ''}`,
             isError,
             totalChars,
@@ -8023,9 +7913,9 @@ HTML_PAGE = """<!DOCTYPE html>
         }
         const taskAction = String(inputObj.Action || inputObj.subject || inputObj.status || rawToolName).trim();
         return {
-          category: '📋 任务管理',
+          category: '任务管理',
           badgeClass: 'badge-tool',
-          badgeText: '📋 任务管理',
+          badgeText: '任务管理',
           summary: `任务状态管理 · ${taskAction.slice(0, 55)}`,
           isError,
           totalChars,
@@ -8038,9 +7928,9 @@ HTML_PAGE = """<!DOCTYPE html>
       // 9. 通用行动兜底
       const fallbackRaw = (inputDisplay || resultDisplay || '').replace(/\\s+/g, ' ').trim();
       return {
-        category: '⚙️ 其它行动',
+        category: '其它行动',
         badgeClass: 'badge-tool',
-        badgeText: '⚙️ ' + (rawToolName || '工具行动'),
+        badgeText: (rawToolName || '工具行动'),
         summary: `${actionDesc || rawToolName}${fallbackRaw ? ': ' + fallbackRaw.slice(0, 60) + (fallbackRaw.length > 60 ? '…' : '') : ''}`,
         isError,
         totalChars,
@@ -8262,8 +8152,8 @@ HTML_PAGE = """<!DOCTYPE html>
             return `
               <div class="thought-segment">
                 <div class="thought-segment-head">
-                  <span>💭 思考过程 ${thoughts.length > 1 ? '#' + (idx + 1) + ' / ' + thoughts.length : ''} · ${t.text.length} 字</span>
-                  <button class="track-mini-btn" onclick="copyRawTextById('${segCopyId}', this, event)">📋 复制</button>
+                  <span>思考过程 ${thoughts.length > 1 ? '#' + (idx + 1) + ' / ' + thoughts.length : ''} · ${t.text.length} 字</span>
+                  <button class="track-mini-btn" onclick="copyRawTextById('${segCopyId}', this, event)">复制</button>
                 </div>
                 <div class="thought-segment-body">${escapeHtml(t.text)}</div>
               </div>
@@ -8277,7 +8167,7 @@ HTML_PAGE = """<!DOCTYPE html>
           <div class="bubble-header" onclick="toggleBubble(this)">
             <div class="bubble-header-left">
               <span class="bubble-chevron">▼</span>
-              <span class="bubble-badge badge-thinking">💭 思考</span>
+              <span class="bubble-badge badge-thinking">思考</span>
               <div class="bubble-summary">${escapeHtml(firstPreview)}${thoughts[0].text.length > 82 ? '…' : ''}</div>
             </div>
             <div class="bubble-header-right">
@@ -8303,7 +8193,7 @@ HTML_PAGE = """<!DOCTYPE html>
             ? `<div class="action-pane">
                  <div class="action-pane-header">
                    <span class="tool-item-tag tag-call">${escapeHtml(meta.inputLabel || '▶ 调用参数')}</span>
-                   <button class="track-mini-btn" onclick="copyRawTextById('${inputCopyId}', this, event)">📋 复制参数</button>
+                   <button class="track-mini-btn" onclick="copyRawTextById('${inputCopyId}', this, event)">复制参数</button>
                  </div>
                  <pre class="tool-item-pre">${escapeHtml(meta.inputText)}</pre>
                </div>`
@@ -8312,7 +8202,7 @@ HTML_PAGE = """<!DOCTYPE html>
             ? `<div class="action-pane">
                  <div class="action-pane-header">
                    <span class="tool-item-tag tag-result">${meta.isError ? '❌ 执行报错输出' : '◀ 执行结果 / 返回输出'} (${meta.resultText.length} 字)</span>
-                   <button class="track-mini-btn" onclick="copyRawTextById('${resultCopyId}', this, event)">📋 复制结果</button>
+                   <button class="track-mini-btn" onclick="copyRawTextById('${resultCopyId}', this, event)">复制结果</button>
                  </div>
                  <pre class="tool-item-pre">${escapeHtml(meta.resultText)}</pre>
                </div>`
@@ -8378,8 +8268,8 @@ HTML_PAGE = """<!DOCTYPE html>
             ? `<div class="track-toolbar">
                  <span>共 ${actions.length} 步行动 · 点击任意语义卡片查看「▶ 调用参数」与「◀ 执行结果」</span>
                  <div style="display: flex; gap: 6px;">
-                   <button class="track-mini-btn" onclick="toggleTrackSubcards(this, true, event)">📖 展开本轮全部详情</button>
-                   <button class="track-mini-btn" onclick="toggleTrackSubcards(this, false, event)">📁 收起详情</button>
+                   <button class="track-mini-btn" onclick="toggleTrackSubcards(this, true, event)">展开全部详情</button>
+                   <button class="track-mini-btn" onclick="toggleTrackSubcards(this, false, event)">收起详情</button>
                  </div>
                </div>`
             : '';
@@ -8396,7 +8286,7 @@ HTML_PAGE = """<!DOCTYPE html>
           <div class="bubble-header" onclick="toggleBubble(this)">
             <div class="bubble-header-left">
               <span class="bubble-chevron">▼</span>
-              <span class="bubble-badge badge-action">⚡ 行动</span>
+              <span class="bubble-badge badge-action">行动</span>
               <div class="bubble-summary">${escapeHtml(summaryLine)}</div>
             </div>
             <div class="bubble-header-right">
@@ -8423,11 +8313,11 @@ HTML_PAGE = """<!DOCTYPE html>
           <div class="bubble-header" onclick="toggleBubble(this)">
             <div class="bubble-header-left">
               <span class="bubble-chevron">▼</span>
-              <span class="bubble-badge badge-assistant">🤖 回复</span>
+              <span class="bubble-badge badge-assistant">回复</span>
               <div class="bubble-summary">${escapeHtml(summary)}</div>
             </div>
             <div class="bubble-header-right">
-              <button class="track-mini-btn" onclick="copyRawTextById('${copyId}', this, event)" title="复制本轮助手回复">📋 复制</button>
+              <button class="track-mini-btn" onclick="copyRawTextById('${copyId}', this, event)" title="复制本轮助手回复">复制</button>
               <span class="bubble-meta-badge">${combinedText.length} 字</span>
             </div>
           </div>
@@ -8441,7 +8331,7 @@ HTML_PAGE = """<!DOCTYPE html>
     function renderNoticeBubble(e) {
       const nText = e.text || '';
       const label = e.label || '系统通知';
-      const icon = label === '上下文压缩快照' ? '🗜️' : (label === '自动续写指令' ? '↩️' : '⚙️');
+      const icon = '';
       const flat = nText.replace(/\\s+/g, ' ');
       const preview = flat.length > 70 ? flat.slice(0, 70) + '…' : flat;
       const noticeLazyId = registerLazyPayload({
@@ -8454,7 +8344,7 @@ HTML_PAGE = """<!DOCTYPE html>
           <div class="bubble-header" onclick="toggleBubble(this)">
             <div class="bubble-header-left">
               <span class="bubble-chevron">▼</span>
-              <span class="bubble-badge badge-notice">${icon} ${escapeHtml(label)}</span>
+              <span class="bubble-badge badge-notice">${escapeHtml(label)}</span>
               <div class="bubble-summary">${escapeHtml(preview)}</div>
             </div>
             <div class="bubble-header-right">
@@ -8687,10 +8577,10 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById('chatModalSub').innerHTML = `
         <span style="font-weight: 700;">${escapeHtml(sess.format.toUpperCase())}</span>
         <span style="margin: 0 8px; opacity: 0.4;">·</span>
-        <span class="meta-copyable" data-id="${escapeHtml(sess.session_id)}" onclick="copySessionId(this, event)" title="点击复制 UUID">🆔 ${(sess.session_id || '').slice(0, 16)}...</span>
+        <span class="meta-copyable" data-id="${escapeHtml(sess.session_id)}" onclick="copySessionId(this, event)" title="点击复制 UUID"><span class="id-label">${(sess.session_id || '').slice(0, 16)}...</span></span>
         <span style="margin: 0 8px; opacity: 0.4;">·</span>
         <a href="javascript:void(0)" class="meta-path-link" data-path="${escapeHtml(sess.file_path)}" onclick="copySessionPath(this, event); return false;" title="点击复制完整绝对路径">
-          <span>📄</span> <span class="path-label" style="max-width: 450px; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: bottom;">${escapeHtml(sess.file_path)}</span>
+          <span class="path-label" style="max-width: 450px; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: bottom;">${escapeHtml(sess.file_path)}</span>
         </a>
       `;
 
@@ -8776,7 +8666,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const hiddenChars = e.hidden_chars || 0;
             const rawText = e.raw_text || '';
             const filterBadge = hiddenChars > 0
-              ? `<span class="bubble-meta-badge" style="background: rgba(16,185,129,0.25); color: #6ee7b7;" title="已剔除系统注入的环境信息、身份文件与时间提醒">🧹 已滤除 ${hiddenChars} 字系统注入</span>`
+              ? `<span class="bubble-meta-badge" style="background: rgba(16,185,129,0.25); color: #6ee7b7;" title="已剔除系统注入的环境信息、身份文件与时间提醒">已滤除 ${hiddenChars} 字系统注入</span>`
               : '';
             const rawBlock = (hiddenChars > 0 && rawText)
               ? `<div class="user-raw-toggle" onclick="toggleUserRaw(this)">查看原始记录（含系统注入）</div>
@@ -8791,7 +8681,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 <div class="bubble-header" style="cursor: ${isPacked ? 'pointer' : 'default'}; margin-bottom: 6px;" ${isPacked ? 'onclick="toggleBubble(this)"' : ''}>
                   <div class="bubble-header-left">
                     ${isPacked ? '<span class="bubble-chevron">▼</span>' : ''}
-                    <div class="bubble-role" style="font-weight: 800; font-size: 12px; letter-spacing: 0.5px;">👤 用户指令 #${turn.userNumber}</div>
+                    <div class="bubble-role" style="font-weight: 800; font-size: 12px; letter-spacing: 0.5px;">用户指令 #${turn.userNumber}</div>
                     ${packedSummary}
                   </div>
                   <div class="bubble-header-right">
@@ -8911,10 +8801,10 @@ function openMigrateModal(cid) {
           feedback.style.color = '#34d399';
           feedback.style.border = '1px solid rgba(16, 185, 129, 0.3)';
           feedback.innerHTML = `
-            <strong>🎉 迁移成功！</strong><br>
+            <strong>迁移成功</strong><br>
             已成功转换生成 ${d.target_format} 会话！<br>
             <div style="margin-top: 8px; font-family: var(--font-mono); font-size: 12px; color: #cbd5e1;">输出路径: ${d.output_path}</div>
-            <button class="btn btn-secondary" style="margin-top: 10px; padding: 4px 10px; font-size: 11px;" onclick="openFolder('${escapeHtml(d.output_path)}')">📂 在文件夹中查看</button>
+            <button class="btn btn-secondary" style="margin-top: 10px; padding: 4px 10px; font-size: 11px;" onclick="openFolder('${escapeHtml(d.output_path)}')">在文件夹中查看</button>
           `;
           btn.innerText = '迁移完成';
           showToast('会话迁移成功！');
@@ -8964,7 +8854,7 @@ function openMigrateModal(cid) {
         });
         const data = await res.json();
         if (data.success) {
-          showToast(`🎉 删除成功！已释放 ${data.freed_display || '相关'} 存储空间`);
+          showToast(`删除成功，已释放 ${data.freed_display || '相关'} 存储空间`);
           const deletedIds = new Set([cid]);
           if (sess && sess.children && sess.children.length > 0) {
             sess.children.forEach(c => deletedIds.add(c.catalog_id));
@@ -9009,7 +8899,7 @@ function openRootsModal() {
       container.innerHTML = appStatus.roots.map(r => `
         <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.25); padding: 10px 14px; border-radius: 8px; border: 1px solid var(--card-border);">
           <div>
-            <span class="format-badge" style="background: ${AGENT_COLORS[r.format] || '#64748b'}; font-size: 10px;">${r.format}</span>
+            <span class="format-badge" style="--agent-dot: ${AGENT_COLORS[r.format] || '#8a8a94'}; font-size: 10px;">${r.format}</span>
             <span style="font-family: var(--font-mono); font-size: 12px; margin-left: 8px; color: #e2e8f0;">${escapeHtml(r.path)}</span>
           </div>
           <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px; color: var(--accent-rose);" onclick="removeRoot(${r.id})">移除</button>
@@ -9157,7 +9047,7 @@ function openRootsModal() {
         });
         const data = await res.json();
         if (res.ok && data.success) {
-          showToast('📂 已打开资源管理器并选中文件！');
+          showToast('已打开资源管理器并选中文件');
         } else {
           showToast('❌ 打开失败: ' + (data.error || '路径不存在'));
         }
@@ -9185,7 +9075,7 @@ function openRootsModal() {
         });
         const data = await res.json();
         if (res.ok && data.success) {
-          showToast('📂 已在资源管理器中打开目标位置！');
+          showToast('已在资源管理器中打开目标位置');
         } else {
           showToast('❌ 打开失败: ' + (data.error || '路径不存在'));
         }
@@ -9396,14 +9286,14 @@ function openRootsModal() {
               <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="handleRowCheckbox(event, '${s.catalog_id}')" style="cursor: pointer;">
             </td>
             <td>
-              <span class="format-badge" style="background: ${bg}; font-size: 11px; padding: 2px 7px;">${s.format}</span>
+              <span class="format-badge" style="--agent-dot: ${bg}; font-size: 11px; padding: 2px 7px;">${s.format}</span>
             </td>
             <td>
               <div style="font-weight: 600; color: #f1f5f9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 440px;" title="${escapeHtml(s.title)}">
                 ${escapeHtml(s.title)}
               </div>
               <div style="font-size: 11px; color: #64748b; font-family: var(--font-mono); margin-top: 2px;">
-                🆔 ${(s.session_id || '').slice(0, 14)}...
+                ${(s.session_id || '').slice(0, 14)}...
               </div>
             </td>
             <td><span style="font-family: var(--font-mono);">${s.records || 0}</span> 步</td>
@@ -9529,7 +9419,7 @@ function openRootsModal() {
         });
         const data = await res.json();
         if (data.success) {
-          showToast(`🎉 批量删除完成！已彻底清理 ${data.deleted_count} 个会话，释放 ${data.total_freed_mb} MB 空间！`);
+          showToast(`批量删除完成：已彻底清理 ${data.deleted_count} 个会话，释放 ${data.total_freed_mb} MB 空间！`);
           closeBatchDeleteConfirm();
           selectedCleanupCids.clear();
           // 全局重新加载
@@ -9543,7 +9433,7 @@ function openRootsModal() {
         showToast('❌ 请求失败: ' + err.message);
       } finally {
         btn.disabled = false;
-        btn.innerText = '💥 确认彻底删除并释放空间';
+        btn.innerText = '确认彻底删除并释放空间';
       }
     }
 
@@ -9558,20 +9448,19 @@ function openRootsModal() {
 
       const grid = document.getElementById('batchTargetGrid');
       const targets = [
-        { id: 'antigravity', name: 'Antigravity IDE', icon: '⚡' },
-        { id: 'claude', name: 'Claude Code', icon: '🟣' },
-        { id: 'workbuddy', name: 'WorkBuddy', icon: '🤖' },
-        { id: 'cursor', name: 'Cursor', icon: '🖱️' },
-        { id: 'copilot', name: 'GitHub Copilot', icon: '🐙' }
+        { id: 'antigravity', name: 'Antigravity IDE' },
+        { id: 'claude', name: 'Claude Code' },
+        { id: 'workbuddy', name: 'WorkBuddy' },
+        { id: 'cursor', name: 'Cursor' },
+        { id: 'copilot', name: 'GitHub Copilot' }
       ];
       selectedBatchTargetFormat = 'antigravity';
 
       grid.innerHTML = targets.map(t => `
         <div class="target-card ${t.id === selectedBatchTargetFormat ? 'selected' : ''}" onclick="selectBatchTargetFormat('${t.id}')">
-          <div style="font-size: 24px;">${t.icon}</div>
           <div>
-            <div style="font-weight: 700; font-size: 13px;">${t.name}</div>
-            <div style="font-size: 11px; color: var(--text-muted);">${t.id}</div>
+            <div style="font-weight: 600; font-size: 12.5px; color: var(--text-main);">${t.name}</div>
+            <div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 2px;">${t.id}</div>
           </div>
         </div>
       `).join('');
@@ -9613,7 +9502,7 @@ function openRootsModal() {
           feedback.style.background = 'rgba(16, 185, 129, 0.15)';
           feedback.style.color = '#34d399';
           feedback.style.border = '1px solid rgba(16, 185, 129, 0.3)';
-          feedback.innerHTML = `<strong>🎉 批量迁移成功！</strong><br>已转换生成 ${data.success_count} 个 ${data.target_format.toUpperCase()} 会话！输出位于 export 目录。`;
+          feedback.innerHTML = `<strong>批量迁移成功</strong><br>已转换生成 ${data.success_count} 个 ${data.target_format.toUpperCase()} 会话！输出位于 export 目录。`;
           btn.innerText = '迁移完成';
           showToast(`已成功批量迁移 ${data.success_count} 个会话！`);
         } else {
@@ -9716,7 +9605,9 @@ function openRootsModal() {
       if (container) {
         container.innerHTML = `
           <div class="global-search-empty">
-            <div class="empty-icon">💬</div>
+            <div class="empty-icon" style="display:inline-flex;justify-content:center;color:var(--text-muted);margin-bottom:10px;">
+              <svg class="svg-icon" width="28" height="28" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            </div>
             <div class="empty-text">跨会话内容全文索引已就绪</div>
             <div class="empty-sub">支持在数百条会话、十余万轮人机对话中进行毫秒级全文精确检索与高亮定位</div>
           </div>
@@ -9742,7 +9633,6 @@ function openRootsModal() {
         if (!data.results || data.results.length === 0) {
           container.innerHTML = `
             <div class="global-search-empty">
-              <div class="empty-icon">🔍</div>
               <div class="empty-text">未找到与「${escapeHtml(query)}」匹配的对话内容</div>
               <div class="empty-sub">请尝试缩短检索词或更换相近表达</div>
             </div>
@@ -9751,14 +9641,15 @@ function openRootsModal() {
         }
 
         container.innerHTML = data.results.map(r => {
-          const roleLabel = r.role === 'user' ? '👤 用户指令' : '🤖 助手回复';
+          const roleLabel = r.role === 'user' ? '用户指令' : '助手回复';
           const roleClass = r.role === 'user' ? 'user' : 'assistant';
           const turnLabel = r.turn_index > 0 ? `第 ${r.turn_index} 轮` : '';
+          const dotColor = AGENT_COLORS[r.session_format] || '#8a8a94';
           return `
             <div class="global-search-item" onclick="jumpToConversationTurn('${escapeHtml(r.catalog_id)}', ${r.turn_index})">
               <div class="global-search-item-header">
                 <div class="global-search-item-left">
-                  <span class="format-badge">${escapeHtml(r.session_format.toUpperCase())}</span>
+                  <span class="format-badge" style="--agent-dot: ${dotColor};">${escapeHtml(r.session_format.toUpperCase())}</span>
                   <span class="global-search-item-role ${roleClass}">${roleLabel}</span>
                   <span class="global-search-item-turn">${turnLabel}</span>
                   <span class="global-search-item-title" title="${escapeHtml(r.session_title)}">${escapeHtml(r.session_title)}</span>
@@ -9799,14 +9690,16 @@ function openRootsModal() {
     <div class="global-search-container">
       <div class="global-search-header">
         <div class="global-search-title">
-          <span class="icon">🔍</span>
+          <svg class="svg-icon" width="15" height="15" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
           <span>全局跨会话对话全文检索</span>
           <span class="global-search-badge" id="globalSearchIndexBadge">全文引擎就绪</span>
         </div>
         <button class="modal-close" onclick="closeGlobalSearchModal()" title="关闭 (Esc)">✕</button>
       </div>
       <div class="global-search-input-wrap">
-        <span class="search-icon">🔍</span>
+        <span class="search-icon">
+          <svg class="svg-icon" width="16" height="16" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        </span>
         <input type="text" id="globalSearchInput" class="global-search-input" placeholder="输入对话内容关键字或句子（例如：评估报告、FTS5、API 密钥、报错原因...）" oninput="handleGlobalSearchInput()" onkeydown="handleGlobalSearchKeydown(event)">
         <button class="search-clear-btn" id="btnGlobalSearchClear" onclick="clearGlobalSearch()" style="display: none;">✕</button>
       </div>
@@ -9816,7 +9709,9 @@ function openRootsModal() {
       </div>
       <div class="global-search-results" id="globalSearchResults">
         <div class="global-search-empty">
-          <div class="empty-icon">💬</div>
+          <div class="empty-icon" style="display:inline-flex;justify-content:center;color:var(--text-muted);margin-bottom:10px;">
+            <svg class="svg-icon" width="28" height="28" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          </div>
           <div class="empty-text">跨会话内容全文索引已就绪</div>
           <div class="empty-sub">支持在数百条会话、十余万轮人机对话中进行毫秒级全文精确检索与高亮定位</div>
         </div>
@@ -9862,7 +9757,7 @@ def main():
     httpd = ReusableThreadingServer(server_address, RequestHandler)
     url = f"http://127.0.0.1:{PORT}"
     print("=" * 65)
-    print("  Memory Tools 跨智能体会话记忆管理与一键迁移平台")
+    print("  Agents Memory Tools 跨智能体会话记忆管理与一键迁移平台")
     print(f"  本地访问地址: {url}")
     print(f"  会话导出目录: {EXPORT_DIR}")
     print("  提示: 正在自动打开默认浏览器，使用期间请保持本窗口开启！")
