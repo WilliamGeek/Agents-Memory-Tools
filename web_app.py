@@ -6083,26 +6083,63 @@ HTML_PAGE = """<!DOCTYPE html>
       padding: 16px 22px;
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 14px;
       border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-      background: rgba(15, 23, 42, 0.6);
+      background: rgba(15, 23, 42, 0.75);
       position: relative;
     }
     .global-search-input-wrap .search-icon {
-      font-size: 18px;
-      opacity: 0.6;
+      position: static !important;
+      transform: none !important;
+      font-size: 20px;
+      opacity: 0.85;
+      color: #818cf8;
+      flex-shrink: 0;
+      margin: 0;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+      pointer-events: none;
     }
     .global-search-input {
       flex: 1;
+      min-width: 0;
       background: transparent;
       border: none;
       outline: none;
       font-size: 16px;
       color: #f8fafc;
       font-family: inherit;
+      padding: 0;
+      line-height: 1.5;
     }
     .global-search-input::placeholder {
       color: #64748b;
+      opacity: 0.9;
+    }
+    .global-search-input-wrap .search-clear-btn {
+      position: static !important;
+      transform: none !important;
+      font-size: 12px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      color: #94a3b8;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: all 0.2s;
+    }
+    .global-search-input-wrap .search-clear-btn:hover {
+      background: rgba(239, 68, 68, 0.25);
+      color: #fca5a5;
+      border-color: rgba(239, 68, 68, 0.4);
     }
     .global-search-meta-bar {
       padding: 8px 22px;
@@ -6248,6 +6285,390 @@ HTML_PAGE = """<!DOCTYPE html>
       border-color: #f59e0b !important;
     }
 
+    /* =========================================================================
+       RESPONSIVE GUI COMPATIBILITY SYSTEM (Multi-Device & Window Adaptations)
+       ========================================================================= */
+
+    /* Basic Reset & Safe Mobile Overflow Handling */
+    html, body {
+      max-width: 100vw;
+      overflow-x: hidden;
+    }
+
+    .new-root-form {
+      display: grid;
+      grid-template-columns: 140px 1fr auto;
+      gap: 10px;
+      align-items: center;
+    }
+
+    /* -------------------------------------------------------------
+       1. Large Screens & Desktops (Default base styles)
+       ------------------------------------------------------------- */
+    @media (min-width: 1441px) {
+      .sessions-grid {
+        grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+      }
+    }
+
+    /* -------------------------------------------------------------
+       2. Laptops & Medium Screens (1025px - 1440px)
+       ------------------------------------------------------------- */
+    @media (max-width: 1440px) {
+      .sessions-grid {
+        grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+        gap: 16px;
+      }
+      .container {
+        padding: 24px 28px;
+      }
+    }
+
+    /* -------------------------------------------------------------
+       3. Tablet Screens (769px - 1024px)
+       ------------------------------------------------------------- */
+    @media (max-width: 1024px) {
+      header {
+        padding: 14px 20px;
+      }
+      .container {
+        padding: 18px 20px;
+      }
+      .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+        margin-bottom: 20px;
+      }
+      .sessions-grid {
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: 14px;
+      }
+      .toolbar {
+        padding: 12px 16px;
+        gap: 10px;
+      }
+      .nav-actions {
+        gap: 8px;
+      }
+      .btn {
+        padding: 7px 12px;
+        font-size: 12.5px;
+      }
+      .global-search-container {
+        width: 94vw;
+        max-width: 94vw;
+      }
+      .modal-card {
+        max-width: 92vw;
+      }
+      .cleanup-drawer-card {
+        width: 96vw;
+        height: 92vh;
+      }
+    }
+
+    /* -------------------------------------------------------------
+       4. Small Tablets & Phones (<= 768px)
+       ------------------------------------------------------------- */
+    @media (max-width: 768px) {
+      header {
+        padding: 12px 16px;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+      }
+      .logo-area {
+        justify-content: space-between;
+      }
+      .nav-actions {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+        width: 100%;
+      }
+      .nav-actions .btn {
+        width: 100%;
+        justify-content: center;
+        padding: 9px 8px;
+        font-size: 12.5px;
+      }
+      .desktop-only {
+        display: none !important;
+      }
+      .container {
+        padding: 12px 14px;
+      }
+      .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+        margin-bottom: 16px;
+      }
+      .stat-card {
+        padding: 12px 14px;
+        border-radius: 12px;
+      }
+      .stat-label {
+        font-size: 11.5px;
+      }
+      .stat-val {
+        font-size: 20px;
+      }
+      .stat-icon {
+        font-size: 22px;
+      }
+      .toolbar {
+        padding: 12px 14px;
+        gap: 10px;
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .search-box {
+        width: 100%;
+        min-width: 100%;
+        flex: 1 1 100%;
+      }
+      .filter-chips {
+        width: 100%;
+        overflow-x: auto;
+        flex-wrap: nowrap;
+        padding-bottom: 4px;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+      }
+      .filter-chips::-webkit-scrollbar {
+        display: none;
+      }
+      .chip {
+        flex-shrink: 0;
+        white-space: nowrap;
+        font-size: 12px;
+        padding: 5px 10px;
+      }
+      .toolbar-sort-group {
+        width: 100%;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .sort-select-wrapper {
+        flex: 1 1 140px;
+      }
+      .sort-select {
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .results-stats-compact {
+        width: 100%;
+        text-align: center;
+        margin-top: 4px;
+        order: 10;
+      }
+      .sessions-grid {
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+      .session-card {
+        padding: 16px;
+        border-radius: 14px;
+      }
+      .card-title {
+        font-size: 15px;
+      }
+      .card-actions {
+        gap: 6px;
+      }
+      .btn-action {
+        min-height: 38px;
+        font-size: 12px;
+        padding: 6px 8px;
+      }
+
+      /* Fullscreen Mobile Modals */
+      .modal-backdrop {
+        padding: 0;
+        align-items: flex-end;
+      }
+      .modal-card,
+      #chatModal .modal-card,
+      .cleanup-drawer-card,
+      .global-search-container {
+        width: 100vw !important;
+        max-width: 100vw !important;
+        height: 100vh !important;
+        max-height: 100vh !important;
+        border-radius: 0 !important;
+        border: none !important;
+        margin: 0 !important;
+      }
+      .modal-header {
+        padding: 14px 16px;
+      }
+      .modal-header > div:first-child {
+        min-width: 0;
+        flex: 1;
+        overflow: hidden;
+      }
+      #chatModalSub {
+        word-break: break-all;
+        overflow-wrap: anywhere;
+        text-overflow: ellipsis;
+        overflow: hidden;
+        white-space: nowrap;
+      }
+      #chatModalBreadcrumb {
+        word-break: break-all;
+        overflow-wrap: anywhere;
+      }
+      .modal-card {
+        overflow-x: hidden !important;
+      }
+      .user-nav-label {
+        display: none;
+      }
+      .modal-body {
+        padding: 14px 16px;
+      }
+      .modal-footer {
+        padding: 12px 16px;
+        flex-direction: column-reverse;
+        gap: 8px;
+        align-items: stretch;
+      }
+      .modal-footer .btn {
+        width: 100%;
+        justify-content: center;
+        min-height: 40px;
+      }
+      .modal-footer > div {
+        width: 100%;
+        display: flex;
+        gap: 8px;
+      }
+      .modal-footer > div .btn {
+        flex: 1;
+      }
+
+      /* Chat Modal Responsive Controls */
+      .chat-modal-toolbar {
+        padding: 8px 12px;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+      }
+      .user-nav-group {
+        width: 100%;
+        justify-content: space-between;
+      }
+      .chat-search-group {
+        width: 100%;
+        max-width: 100%;
+      }
+      .chat-toggle-group {
+        width: 100%;
+        display: flex;
+        gap: 8px;
+      }
+      .chat-toggle-group .nav-btn-toggle {
+        flex: 1;
+        justify-content: center;
+      }
+      #chatStreamBody {
+        padding: 12px 10px;
+      }
+
+      /* Global Search Modal Responsive */
+      .global-search-header {
+        padding: 12px 16px;
+      }
+      .global-search-title {
+        font-size: 14px;
+      }
+      .global-search-badge {
+        display: none;
+      }
+      .global-search-input-wrap {
+        padding: 12px 14px;
+        gap: 10px;
+      }
+      .global-search-input {
+        font-size: 14px;
+      }
+      .global-search-meta-bar {
+        padding: 8px 14px;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+      }
+      .global-search-tip {
+        font-size: 11px;
+        opacity: 0.8;
+      }
+      .global-search-results {
+        padding: 10px 12px;
+      }
+      .global-search-item {
+        padding: 10px 12px;
+      }
+      .global-search-item-title {
+        max-width: 180px;
+      }
+
+      /* New Root Form in Roots Modal */
+      .new-root-form {
+        grid-template-columns: 1fr !important;
+        gap: 8px !important;
+      }
+      .new-root-form button {
+        width: 100%;
+      }
+
+      /* Filter Matrix in Cleanup Drawer */
+      .filter-matrix {
+        padding: 10px 12px;
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+    }
+
+    /* -------------------------------------------------------------
+       5. Very Narrow Mobile Phones (<= 420px)
+       ------------------------------------------------------------- */
+    @media (max-width: 420px) {
+      .logo-title {
+        font-size: 16px;
+      }
+      .logo-tag {
+        display: none;
+      }
+      .logo-badge {
+        width: 32px;
+        height: 32px;
+        font-size: 16px;
+      }
+      .stats-grid {
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      .stat-card {
+        padding: 10px;
+      }
+      .stat-val {
+        font-size: 18px;
+      }
+      .card-actions {
+        flex-wrap: wrap;
+      }
+      .card-actions .btn-action {
+        flex: 1 1 calc(50% - 4px);
+        min-height: 38px;
+      }
+      .card-actions .btn-folder {
+        flex: 1 1 100%;
+      }
+    }
+
   </style>
 </head>
 <body>
@@ -6259,14 +6680,16 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
     <div class="nav-actions">
       <button class="btn btn-secondary" onclick="openGlobalSearchModal()" title="全局跨会话对话内容全文检索 (快捷键: Ctrl+Shift+F)">
-        <span>🔍</span> <span>对话内容全盘检索</span>
+        <span>🔍</span> <span><span class="desktop-only">对话内容</span>全盘检索</span>
       </button>
-      <button class="btn btn-secondary" onclick="openRootsModal()">📂 扫描目录管理</button>
+      <button class="btn btn-secondary" onclick="openRootsModal()" title="管理智能体会话根目录">
+        <span>📂</span> <span><span class="desktop-only">扫描</span>目录管理</span>
+      </button>
       <button class="btn btn-secondary" onclick="openCleanupDrawer()" title="进入会话批量管理控制台">
-        <span>🗂️</span> <span>会话批量管理</span>
+        <span>🗂️</span> <span><span class="desktop-only">会话</span>批量管理</span>
       </button>
       <button class="btn btn-primary" id="btnRefresh" onclick="refreshCatalog()" title="重新扫描并刷新所有智能体会话数据">
-        <span>🔄</span> <span>刷新会话数据</span>
+        <span>🔄</span> <span>刷新<span class="desktop-only">会话</span>数据</span>
       </button>
     </div>
   </header>
@@ -6474,7 +6897,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
         <div style="background: rgba(255, 255, 255, 0.03); padding: 16px; border-radius: 12px; border: 1px solid var(--card-border);">
           <h4 style="font-size: 14px; margin-bottom: 12px;">添加新的扫描目录：</h4>
-          <div style="display: grid; grid-template-columns: 140px 1fr auto; gap: 10px; align-items: center;">
+          <div class="new-root-form">
             <select id="newRootFormat" class="search-input" style="padding: 8px 12px;">
               <option value="antigravity">Antigravity</option>
               <option value="claude">Claude Code</option>
