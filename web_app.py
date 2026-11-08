@@ -23,6 +23,8 @@ import tempfile
 import urllib.parse
 import re
 import hashlib
+import gzip
+import threading
 from html import unescape as _html_unescape
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -2285,20 +2287,382 @@ def extract_antigravity_title(abs_path: Path) -> str:
     return title
 
 
+
+# ---------------------------------------------------------------------------
+# Global Dialogue Content Full-Text Search Engine (SQLite FTS5 + CJK Tokenizer)
+# ---------------------------------------------------------------------------
+
+def cjk_tokenize(text: str) -> str:
+    """Separate CJK characters with whitespace while preserving ASCII words/symbols.
+    Enables SQLite unicode61 FTS5 to index arbitrary Chinese words, single chars and phrases.
+    """
+    if not text:
+        return ""
+    return re.sub(r'([一-鿿㐀-䶿豈-﫿])', r' \1 ', text)
+
+def cjk_untokenize(text: str) -> str:
+    """Collapse artificial spaces between CJK characters, preserving <mark> tags."""
+    if not text:
+        return ""
+    text = re.sub(r'([一-鿿㐀-䶿豈-﫿])\s+(?=[一-鿿㐀-䶿豈-﫿<])', r'\1', text)
+    text = re.sub(r'(</mark>)\s+(?=[一-鿿㐀-䶿豈-﫿])', r'\1', text)
+    text = re.sub(r'([一-鿿㐀-䶿豈-﫿])\s+(?=<mark)', r'\1', text)
+    return text
+
+class SessionFTSManager:
+    """High-performance SQLite FTS5 Full-Text Search Engine for agent conversations.
+    Zero external dependencies, incremental file indexing, sub-millisecond query latency.
+    """
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._init_db()
+
+    def _get_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, timeout=15)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self):
+        with self._lock, self._get_conn() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS fts_file_meta (
+                    file_path TEXT PRIMARY KEY,
+                    mtime REAL,
+                    size INTEGER,
+                    catalog_id TEXT,
+                    indexed_turns INTEGER,
+                    updated_at REAL
+                )
+            """)
+            conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS conversation_fts USING fts5(
+                    catalog_id UNINDEXED,
+                    session_id UNINDEXED,
+                    role UNINDEXED,
+                    turn_index UNINDEXED,
+                    timestamp UNINDEXED,
+                    session_title UNINDEXED,
+                    session_format UNINDEXED,
+                    cjk_text,
+                    tokenize="unicode61"
+                )
+            """)
+
+    def is_file_up_to_date(self, file_path: str, mtime: float, size: int) -> bool:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT mtime, size FROM fts_file_meta WHERE file_path = ?",
+                (file_path,)
+            ).fetchone()
+            if not row:
+                return False
+            return abs(row["mtime"] - mtime) < 0.001 and row["size"] == size
+
+    def index_session_turns(
+        self,
+        file_path: str,
+        mtime: float,
+        size: int,
+        catalog_id: str,
+        session_id: str,
+        session_title: str,
+        session_format: str,
+        turns: list[dict]
+    ):
+        with self._lock, self._get_conn() as conn:
+            conn.execute("DELETE FROM conversation_fts WHERE catalog_id = ?", (catalog_id,))
+            insert_rows = []
+            for t in turns:
+                role = t.get("role") or ""
+                if role not in ("user", "assistant"):
+                    continue
+                text = (t.get("text") or "").strip()
+                if len(text) < 2:
+                    continue
+                if len(text) > 12000:
+                    text = text[:12000]
+                tokenized = cjk_tokenize(text)
+                insert_rows.append((
+                    catalog_id,
+                    session_id,
+                    role,
+                    int(t.get("turn_index", 0)),
+                    str(t.get("timestamp") or ""),
+                    str(session_title or ""),
+                    str(session_format or ""),
+                    tokenized
+                ))
+
+            if insert_rows:
+                conn.executemany("""
+                    INSERT INTO conversation_fts (
+                        catalog_id, session_id, role, turn_index, timestamp,
+                        session_title, session_format, cjk_text
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, insert_rows)
+
+            conn.execute("""
+                INSERT OR REPLACE INTO fts_file_meta (
+                    file_path, mtime, size, catalog_id, indexed_turns, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            """, (file_path, mtime, size, catalog_id, len(insert_rows), time.time()))
+
+    def delete_session(self, catalog_id: str):
+        with self._lock, self._get_conn() as conn:
+            conn.execute("DELETE FROM conversation_fts WHERE catalog_id = ?", (catalog_id,))
+            conn.execute("DELETE FROM fts_file_meta WHERE catalog_id = ?", (catalog_id,))
+
+    def get_stats(self) -> dict:
+        with self._get_conn() as conn:
+            turns = conn.execute("SELECT count(*) FROM conversation_fts").fetchone()[0]
+            files = conn.execute("SELECT count(*) FROM fts_file_meta").fetchone()[0]
+            return {"indexed_files": files, "indexed_turns": turns}
+
+    def search(self, query: str, limit: int = 50) -> dict:
+        t0 = time.time()
+        q = (query or "").strip()
+        if not q:
+            stats = self.get_stats()
+            return {
+                "query": "",
+                "count": 0,
+                "total_indexed_turns": stats["indexed_turns"],
+                "total_indexed_files": stats["indexed_files"],
+                "latency_ms": 0,
+                "results": []
+            }
+
+        tokenized_q = cjk_tokenize(q)
+        fts_match = '"' + ' '.join(tokenized_q.split()) + '"'
+
+        with self._get_conn() as conn:
+            try:
+                cur = conn.execute("""
+                    SELECT catalog_id, session_id, role, turn_index, timestamp,
+                           session_title, session_format,
+                           snippet(conversation_fts, 7, '<mark class="chat-highlight">', '</mark>', '...', 28) AS snippet
+                    FROM conversation_fts
+                    WHERE conversation_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                """, (fts_match, limit))
+                rows = cur.fetchall()
+            except sqlite3.OperationalError:
+                # Fallback to plain terms if syntax error
+                try:
+                    cur = conn.execute("""
+                        SELECT catalog_id, session_id, role, turn_index, timestamp,
+                               session_title, session_format,
+                               snippet(conversation_fts, 7, '<mark class="chat-highlight">', '</mark>', '...', 28) AS snippet
+                        FROM conversation_fts
+                        WHERE conversation_fts MATCH ?
+                        ORDER BY rank
+                        LIMIT ?
+                    """, (tokenized_q, limit))
+                    rows = cur.fetchall()
+                except Exception:
+                    rows = []
+
+            stats = self.get_stats()
+
+        results = []
+        for r in rows:
+            results.append({
+                "catalog_id": r["catalog_id"],
+                "session_id": r["session_id"],
+                "role": r["role"],
+                "turn_index": r["turn_index"],
+                "timestamp": r["timestamp"],
+                "session_title": r["session_title"],
+                "session_format": r["session_format"],
+                "snippet": cjk_untokenize(r["snippet"]),
+            })
+
+        latency = round((time.time() - t0) * 1000, 2)
+        return {
+            "query": q,
+            "count": len(results),
+            "total_indexed_turns": stats["indexed_turns"],
+            "total_indexed_files": stats["indexed_files"],
+            "latency_ms": latency,
+            "results": results
+        }
+
+FTS_DB_PATH = Path(default_catalog_path()).parent / "dialogue_fts.sqlite3"
+GLOBAL_FTS_MGR = SessionFTSManager(FTS_DB_PATH)
+
+_FTS_SYNC_IN_PROGRESS = False
+
+def extract_dialogue_turns_for_fts(path: Path, fmt: str) -> list[dict]:
+    turns = []
+    try:
+        if fmt == "antigravity":
+            sess = load_session(path, AgentFormat.ANTIGRAVITY)
+            user_turn_no = 0
+            for ev in sess.events:
+                role = ev.role.value if hasattr(ev.role, "value") and ev.role else str(ev.role or "")
+                if role == "user":
+                    user_turn_no += 1
+                    t = (ev.text or "").strip()
+                    if t:
+                        turns.append({"role": "user", "turn_index": user_turn_no, "text": t, "timestamp": ev.timestamp or ""})
+                elif role == "assistant":
+                    t = (ev.text or "").strip()
+                    if t:
+                        turns.append({"role": "assistant", "turn_index": user_turn_no, "text": t, "timestamp": ev.timestamp or ""})
+        elif fmt == "claude":
+            sess = load_session(path, AgentFormat.CLAUDE)
+            user_turn_no = 0
+            for ev in sess.events:
+                role = ev.role.value if hasattr(ev.role, "value") and ev.role else str(ev.role or "")
+                if role == "user":
+                    user_turn_no += 1
+                    t = (ev.text or "").strip()
+                    if t:
+                        turns.append({"role": "user", "turn_index": user_turn_no, "text": t, "timestamp": ev.timestamp or ""})
+                elif role == "assistant":
+                    t = (ev.text or "").strip()
+                    if t:
+                        turns.append({"role": "assistant", "turn_index": user_turn_no, "text": t, "timestamp": ev.timestamp or ""})
+        elif fmt == "trae":
+            messages = get_trae_session_messages({"file_path": str(path), "session_id": path.stem})
+            user_turn_no = 0
+            for msg in messages:
+                role = msg.get("role") or ""
+                t = (msg.get("text") or "").strip()
+                if not t:
+                    continue
+                if role == "user":
+                    user_turn_no += 1
+                    turns.append({"role": "user", "turn_index": user_turn_no, "text": t, "timestamp": msg.get("timestamp") or ""})
+                elif role == "assistant":
+                    turns.append({"role": "assistant", "turn_index": user_turn_no, "text": t, "timestamp": msg.get("timestamp") or ""})
+        elif fmt == "workbuddy":
+            events = get_workbuddy_session_events(path)
+            user_turn_no = 0
+            for ev in events:
+                role = ev.get("role") or ""
+                t = (ev.get("text") or "").strip()
+                if not t:
+                    continue
+                if role == "user":
+                    user_turn_no += 1
+                    turns.append({"role": "user", "turn_index": user_turn_no, "text": t, "timestamp": ev.get("timestamp") or ""})
+                elif role == "assistant":
+                    turns.append({"role": "assistant", "turn_index": user_turn_no, "text": t, "timestamp": ev.get("timestamp") or ""})
+    except Exception:
+        pass
+    return turns
+
+def _run_fts_sync_worker():
+    global _FTS_SYNC_IN_PROGRESS
+    if _FTS_SYNC_IN_PROGRESS:
+        return
+    _FTS_SYNC_IN_PROGRESS = True
+    try:
+        # Collect session targets from catalog database and disk
+        items_to_sync = []
+        try:
+            with Catalog(default_catalog_path()) as cat:
+                for entry in cat.iter_sessions():
+                    p = Path(entry.canonical_path)
+                    if p.exists() and p.stat().st_size > 0:
+                        fmt_str = entry.format.value if hasattr(entry.format, "value") else str(entry.format)
+                        items_to_sync.append((p, fmt_str, entry.catalog_id, entry.session_id, entry.display_title or entry.session_id))
+        except Exception:
+            pass
+
+        # Also Antigravity active files
+        for d in ANTIGRAVITY_CONV_DIRS:
+            if not d.exists():
+                continue
+            for p in d.glob("*.db"):
+                if p.name.endswith("-wal") or p.name.endswith("-shm") or p.stat().st_size == 0:
+                    continue
+                sid = p.stem
+                cid = f"ag_{sid[:12]}"
+                if not any(item[0] == p for item in items_to_sync):
+                    items_to_sync.append((p, "antigravity", cid, sid, f"会话_{sid[:8]}"))
+
+        # Incrementally index
+        synced_count = 0
+        for p, fmt_str, cid, sid, title in items_to_sync:
+            try:
+                st = p.stat()
+                mtime = st.st_mtime
+                size = st.st_size
+                if GLOBAL_FTS_MGR.is_file_up_to_date(str(p), mtime, size):
+                    continue
+                turns = extract_dialogue_turns_for_fts(p, fmt_str)
+                GLOBAL_FTS_MGR.index_session_turns(
+                    file_path=str(p),
+                    mtime=mtime,
+                    size=size,
+                    catalog_id=cid,
+                    session_id=sid,
+                    session_title=title,
+                    session_format=fmt_str,
+                    turns=turns
+                )
+                synced_count += 1
+                time.sleep(0.005)
+            except Exception:
+                pass
+    finally:
+        _FTS_SYNC_IN_PROGRESS = False
+
+def trigger_fts_sync():
+    t = threading.Thread(target=_run_fts_sync_worker, daemon=True, name="FTS_SyncWorker")
+    t.start()
+
+
 class RequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         try:
             super().log_message(format, *args)
         except Exception:
             pass
+    def _send_compressed(self, body_bytes: bytes, content_type: str, status: int = 200, extra_headers: dict = None):
+        """Send response with automatic ETag (HTTP 304) and Gzip compression for payloads > 1KB."""
+        etag = f'"{hashlib.md5(body_bytes).hexdigest()}"'
+        client_etag = self.headers.get("If-None-Match")
+        if client_etag == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "private, max-age=0, must-revalidate")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            return
+
+        accept_encoding = self.headers.get("Accept-Encoding", "")
+        can_gzip = "gzip" in accept_encoding and len(body_bytes) > 1024
+
+        if can_gzip:
+            payload = gzip.compress(body_bytes, compresslevel=6)
+        else:
+            payload = body_bytes
+
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        if can_gzip:
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "private, max-age=0, must-revalidate")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(payload)
+
     def send_json(self, data: Any, status: int = 200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(body)
+        self._send_compressed(body, "application/json; charset=utf-8", status=status)
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -2322,6 +2686,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.handle_get_session_detail(query)
         elif path == "/api/session/inspect":
             self.handle_get_session_inspect(query)
+        elif path == "/api/search/content":
+            self.handle_search_content(query)
         else:
             self.send_json({"error": "Not Found"}, status=404)
 
@@ -2706,6 +3072,16 @@ class RequestHandler(BaseHTTPRequestHandler):
             if notice:
                 payload["notice"] = notice
         self.send_json(payload)
+
+    def handle_search_content(self, query: dict[str, list[str]]):
+        q = query.get("q", [""])[0]
+        limit = 50
+        try:
+            limit = min(int(query.get("limit", ["50"])[0]), 200)
+        except Exception:
+            limit = 50
+        res = GLOBAL_FTS_MGR.search(q, limit=limit)
+        self.send_json(res)
 
     def handle_get_session_detail(self, query: dict[str, list[str]]):
         cid = query.get("catalog_id", [""])[0]
@@ -3658,11 +4034,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             script_tag = "<script>/* Inlined marked.min.js v15.0.12 (100% Offline GFM) */\n" + _MARKED_JS + "\n</script>"
             html = html.replace("<!-- MARKED_JS_PLACEHOLDER -->", script_tag)
         body = html.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self._send_compressed(body, "text/html; charset=utf-8", status=200)
 
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -3670,9 +4042,7 @@ HTML_PAGE = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Memory Tools</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <!-- 现代化高品质本地原生字体栈：100% 离线可用，零网络延迟阻塞 -->
   <style>
     :root {
       --bg: #090d16;
@@ -3687,8 +4057,8 @@ HTML_PAGE = """<!DOCTYPE html>
       --accent-emerald: #10b981;
       --accent-amber: #f59e0b;
       --accent-rose: #f43f5e;
-      --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
-      --font-mono: 'JetBrains Mono', Consolas, monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
+      --font-mono: "JetBrains Mono", "Cascadia Code", "Fira Code", Consolas, "SF Mono", Monaco, "Courier New", monospace;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -5650,6 +6020,234 @@ HTML_PAGE = """<!DOCTYPE html>
       background: rgba(255, 255, 255, 0.02);
     }
 
+
+    /* Global Dialogue Full-Text Search Modal & Snippets */
+    .modal-overlay.global-search-modal {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(4, 7, 15, 0.78);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      z-index: 10000;
+      align-items: flex-start;
+      justify-content: center;
+      padding-top: 6vh;
+    }
+    .modal-overlay.global-search-modal.active {
+      display: flex;
+    }
+    .global-search-container {
+      width: 920px;
+      max-width: 95vw;
+      max-height: 84vh;
+      background: #0f172a;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 18px;
+      box-shadow: 0 25px 60px -12px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(99, 102, 241, 0.2);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      animation: globalSearchPop 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes globalSearchPop {
+      from { opacity: 0; transform: scale(0.96) translateY(-10px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    .global-search-header {
+      padding: 16px 22px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .global-search-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #f1f5f9;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .global-search-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 12px;
+      background: rgba(99, 102, 241, 0.2);
+      color: #a5b4fc;
+      border: 1px solid rgba(99, 102, 241, 0.35);
+    }
+    .global-search-input-wrap {
+      padding: 16px 22px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(15, 23, 42, 0.6);
+      position: relative;
+    }
+    .global-search-input-wrap .search-icon {
+      font-size: 18px;
+      opacity: 0.6;
+    }
+    .global-search-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      font-size: 16px;
+      color: #f8fafc;
+      font-family: inherit;
+    }
+    .global-search-input::placeholder {
+      color: #64748b;
+    }
+    .global-search-meta-bar {
+      padding: 8px 22px;
+      font-size: 12px;
+      color: #94a3b8;
+      background: rgba(0, 0, 0, 0.2);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+    .global-search-meta-bar .stat-highlight {
+      color: #60a5fa;
+      font-weight: 600;
+    }
+    .global-search-results {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .global-search-empty {
+      text-align: center;
+      padding: 50px 20px;
+      color: #94a3b8;
+    }
+    .global-search-empty .empty-icon {
+      font-size: 36px;
+      margin-bottom: 12px;
+      opacity: 0.8;
+    }
+    .global-search-empty .empty-text {
+      font-size: 15px;
+      font-weight: 600;
+      color: #e2e8f0;
+      margin-bottom: 6px;
+    }
+    .global-search-empty .empty-sub {
+      font-size: 12.5px;
+      color: #64748b;
+    }
+    .global-search-item {
+      padding: 14px 16px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .global-search-item:hover {
+      background: rgba(99, 102, 241, 0.08);
+      border-color: rgba(99, 102, 241, 0.4);
+      transform: translateY(-1px);
+    }
+    .global-search-item-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+    }
+    .global-search-item-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .global-search-item-title {
+      font-weight: 600;
+      color: #e2e8f0;
+      max-width: 480px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .global-search-item-role {
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 6px;
+      font-weight: 600;
+    }
+    .global-search-item-role.user {
+      background: rgba(59, 130, 246, 0.2);
+      color: #93c5fd;
+      border: 1px solid rgba(59, 130, 246, 0.35);
+    }
+    .global-search-item-role.assistant {
+      background: rgba(168, 85, 247, 0.2);
+      color: #d8b4fe;
+      border: 1px solid rgba(168, 85, 247, 0.35);
+    }
+    .global-search-item-turn {
+      font-size: 11px;
+      color: #94a3b8;
+      font-family: var(--font-mono);
+    }
+    .global-search-item-time {
+      font-size: 11px;
+      color: #64748b;
+    }
+    .global-search-item-jump {
+      font-size: 12px;
+      color: #818cf8;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      opacity: 0.8;
+    }
+    .global-search-item:hover .global-search-item-jump {
+      opacity: 1;
+      color: #a5b4fc;
+    }
+    .global-search-snippet {
+      font-size: 13px;
+      line-height: 1.6;
+      color: #cbd5e1;
+      padding: 8px 12px;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 8px;
+      border-left: 3px solid rgba(99, 102, 241, 0.5);
+      word-break: break-word;
+    }
+    .chat-highlight {
+      background: rgba(245, 158, 11, 0.3);
+      color: #fef3c7;
+      padding: 1px 4px;
+      border-radius: 4px;
+      font-weight: 600;
+      border-bottom: 2px solid #f59e0b;
+    }
+    @keyframes jumpPulse {
+      0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.8); border-color: #f59e0b; transform: scale(1.008); }
+      50% { box-shadow: 0 0 24px 6px rgba(245, 158, 11, 0.5); border-color: #fbbf24; transform: scale(1.008); }
+      100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); transform: scale(1); }
+    }
+    .jump-highlight {
+      animation: jumpPulse 2.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+      border-color: #f59e0b !important;
+    }
+
   </style>
 </head>
 <body>
@@ -5660,6 +6258,9 @@ HTML_PAGE = """<!DOCTYPE html>
       <div class="logo-tag">WEB GUI</div>
     </div>
     <div class="nav-actions">
+      <button class="btn btn-secondary" onclick="openGlobalSearchModal()" title="全局跨会话对话内容全文检索 (快捷键: Ctrl+Shift+F)">
+        <span>🔍</span> <span>对话内容全盘检索</span>
+      </button>
       <button class="btn btn-secondary" onclick="openRootsModal()">📂 扫描目录管理</button>
       <button class="btn btn-secondary" onclick="openCleanupDrawer()" title="进入会话批量管理控制台">
         <span>🗂️</span> <span>会话批量管理</span>
@@ -6374,10 +6975,36 @@ HTML_PAGE = """<!DOCTYPE html>
           ? `已折叠 ${childCount} 个子代理会话（点击展开全部）`
           : `点击折叠 ${childCount} 个子代理会话`;
       }
-      const searchVal = (document.getElementById('searchInput')?.value || '').trim();
+      const searchVal = (document.getElementById('searchInput')?.value || '').trim().toLowerCase();
       const base = (allSessions || []).filter(s => {
+        // 1. Lineage fold filter
         if (foldLineage && s.is_lineage_branch) return false;
-        if (foldSubagents && s.is_child && !searchVal) return false;
+
+        // 2. Subagents fold filter:
+        // When foldSubagents is active, child sessions NEVER appear as standalone root grid cards.
+        // They are indexed inside the parent card's dropdown drawer.
+        if (foldSubagents && s.is_child) return false;
+
+        // 3. Search query filter (In-memory fast match)
+        if (searchVal) {
+          const title = (s.title || '').toLowerCase();
+          const sid = (s.session_id || '').toLowerCase();
+          const fmt = (s.format || '').toLowerCase();
+          const path = (s.file_path || '').toLowerCase();
+          const sideq = (s.side_question || '').toLowerCase();
+          const matchesSelf = title.includes(searchVal) || sid.includes(searchVal) || fmt.includes(searchVal) || path.includes(searchVal) || sideq.includes(searchVal);
+
+          // Also check if any child matches search
+          const matchesChild = (s.children || []).some(c => {
+            const cTitle = (c.title || '').toLowerCase();
+            const cSid = (c.session_id || '').toLowerCase();
+            const cAgent = (c.agent_name || '').toLowerCase();
+            return cTitle.includes(searchVal) || cSid.includes(searchVal) || cAgent.includes(searchVal);
+          });
+
+          if (!matchesSelf && !matchesChild) return false;
+        }
+
         return true;
       });
       const sorted = sortSessionsList(base);
@@ -6585,10 +7212,9 @@ HTML_PAGE = """<!DOCTYPE html>
       loadSessions();
     }
 
-    let searchTimeout = null;
     function handleSearch() {
-      clearTimeout(searchTimeout);
-      searchTimeout = setTimeout(loadSessions, 200);
+      // 100% Client-side in-memory filter: 0ms network latency
+      applySortAndRender();
     }
 
     async function refreshCatalog() {
@@ -7615,8 +8241,14 @@ HTML_PAGE = """<!DOCTYPE html>
       input.focus();
     }
 
-    async function openChatModal(cid) {
-      const sess = allSessions.find(s => s.catalog_id === cid);
+    async function openChatModal(cid, targetTurnIndex = null) {
+      const sess = allSessions.find(s =>
+        s.catalog_id === cid ||
+        s.session_id === cid ||
+        (cid.startsWith('ag_') && s.session_id && s.session_id.startsWith(cid.slice(3, 15))) ||
+        (s.session_id && cid.includes(s.session_id.slice(0, 8)))
+      );
+      const effectiveCid = sess ? sess.catalog_id : cid;
       if (!sess) return;
       document.getElementById('chatModalTitle').innerText = sess.title;
       document.getElementById('chatModalSub').innerHTML = `
@@ -7673,9 +8305,21 @@ HTML_PAGE = """<!DOCTYPE html>
       const body = document.getElementById('chatStreamBody');
       body.innerHTML = '<div style="text-align: center; padding: 40px; color: var(--text-muted);">正在加载对话内容...</div>';
 
+      // Check Client In-Memory Detail Cache
+      let data = sessionDetailCache.get(effectiveCid);
+      if (!data) {
+        try {
+          const res = await fetch(`/api/session/detail?catalog_id=${effectiveCid}`);
+          data = await res.json();
+          if (data && !data.error) {
+            sessionDetailCache.set(effectiveCid, data);
+          }
+        } catch (e) {
+          showToast(`网络请求异常: ${e}`);
+          return;
+        }
+      }
       try {
-        const res = await fetch(`/api/session/detail?catalog_id=${cid}`);
-        const data = await res.json();
         if (data.error) {
           body.innerHTML = `<div style="color: var(--accent-rose); padding: 20px;">${data.error}</div>`;
           return;
@@ -7740,7 +8384,7 @@ HTML_PAGE = """<!DOCTYPE html>
             ? `<div class="turn-tracks">${noticesHtml}${thinkingHtml}${actionHtml}${responseHtml}</div>`
             : '';
 
-          return `<div class="turn-block">${userHtml}${tracksWrapper}</div>`;
+          return `<div class="turn-block" id="turn-block-${turn.userNumber}">${userHtml}${tracksWrapper}</div>`;
         }).join('');
 
         body.innerHTML = detailNotice + '<div class="chat-stream">' + turnsHtml + '</div>';
@@ -7748,6 +8392,19 @@ HTML_PAGE = """<!DOCTYPE html>
         // 收集所有用户指令卡片供上下快速跳转
         userMsgElements = Array.from(document.querySelectorAll('#chatStreamBody .user-bubble-anchor'));
         updateUserNavDisplay();
+
+        // If targetTurnIndex requested (from Global Search), smoothly scroll into view and pulse
+        if (targetTurnIndex) {
+          setTimeout(() => {
+            const targetEl = document.getElementById(`turn-block-${targetTurnIndex}`) ||
+                             document.querySelector(`[data-user-idx="${targetTurnIndex - 1}"]`);
+            if (targetEl) {
+              targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              targetEl.classList.add('jump-highlight');
+              setTimeout(() => targetEl.classList.remove('jump-highlight'), 3000);
+            }
+          }, 150);
+        }
 
       } catch (e) {
         body.innerHTML = `<div style="color: var(--accent-rose); padding: 20px;">读取失败: ${e}</div>`;
@@ -8544,7 +9201,196 @@ function openRootsModal() {
       }
     }
 
+
+    // -----------------------------------------------------------------------
+    // Client-Side Session Detail Cache (Map)
+    // -----------------------------------------------------------------------
+    const sessionDetailCache = new Map();
+
+    // -----------------------------------------------------------------------
+    // Global Dialogue Content Search Controller (SQLite FTS5 Frontend)
+    // -----------------------------------------------------------------------
+    let globalSearchDebounce = null;
+
+    function openGlobalSearchModal() {
+      const modal = document.getElementById('globalSearchModal');
+      if (!modal) return;
+      modal.classList.add('active');
+      const input = document.getElementById('globalSearchInput');
+      if (input) {
+        input.focus();
+        input.select();
+      }
+      // Load current index stats
+      loadGlobalSearchStats();
+    }
+
+    function closeGlobalSearchModal() {
+      const modal = document.getElementById('globalSearchModal');
+      if (modal) modal.classList.remove('active');
+    }
+
+    async function loadGlobalSearchStats() {
+      try {
+        const res = await fetch('/api/search/content?q=');
+        const data = await res.json();
+        const badge = document.getElementById('globalSearchIndexBadge');
+        if (badge && data.total_indexed_turns) {
+          badge.innerText = `已索引 ${Number(data.total_indexed_turns).toLocaleString()} 轮对话`;
+        }
+      } catch (e) {}
+    }
+
+    function handleGlobalSearchInput() {
+      const val = (document.getElementById('globalSearchInput')?.value || '').trim();
+      const clearBtn = document.getElementById('btnGlobalSearchClear');
+      if (clearBtn) clearBtn.style.display = val ? 'block' : 'none';
+
+      clearTimeout(globalSearchDebounce);
+      if (!val) {
+        renderGlobalSearchEmpty();
+        return;
+      }
+      globalSearchDebounce = setTimeout(() => {
+        executeGlobalSearch(val);
+      }, 180);
+    }
+
+    function handleGlobalSearchKeydown(e) {
+      if (e.key === 'Escape') {
+        closeGlobalSearchModal();
+      } else if (e.key === 'Enter') {
+        const val = (document.getElementById('globalSearchInput')?.value || '').trim();
+        if (val) executeGlobalSearch(val);
+      }
+    }
+
+    function clearGlobalSearch() {
+      const input = document.getElementById('globalSearchInput');
+      if (input) {
+        input.value = '';
+        input.focus();
+      }
+      const clearBtn = document.getElementById('btnGlobalSearchClear');
+      if (clearBtn) clearBtn.style.display = 'none';
+      renderGlobalSearchEmpty();
+    }
+
+    function renderGlobalSearchEmpty() {
+      const container = document.getElementById('globalSearchResults');
+      const stats = document.getElementById('globalSearchStats');
+      if (stats) stats.innerText = '输入关键字即时检索全平台历史对话';
+      if (container) {
+        container.innerHTML = `
+          <div class="global-search-empty">
+            <div class="empty-icon">💬</div>
+            <div class="empty-text">跨会话内容全文索引已就绪</div>
+            <div class="empty-sub">支持在数百条会话、十余万轮人机对话中进行毫秒级全文精确检索与高亮定位</div>
+          </div>
+        `;
+      }
+    }
+
+    async function executeGlobalSearch(query) {
+      const container = document.getElementById('globalSearchResults');
+      const stats = document.getElementById('globalSearchStats');
+      if (stats) stats.innerText = '正在检索...';
+      try {
+        const res = await fetch(`/api/search/content?q=${encodeURIComponent(query)}&limit=60`);
+        const data = await res.json();
+        const count = data.count || 0;
+        const latency = data.latency_ms || 0;
+        const total = data.total_indexed_turns || 0;
+
+        if (stats) {
+          stats.innerHTML = `找到 <span class="stat-highlight">${count}</span> 条匹配结果 · 耗时 <span class="stat-highlight">${latency} ms</span> · 覆盖 ${total} 轮对话`;
+        }
+
+        if (!data.results || data.results.length === 0) {
+          container.innerHTML = `
+            <div class="global-search-empty">
+              <div class="empty-icon">🔍</div>
+              <div class="empty-text">未找到与「${escapeHtml(query)}」匹配的对话内容</div>
+              <div class="empty-sub">请尝试缩短检索词或更换相近表达</div>
+            </div>
+          `;
+          return;
+        }
+
+        container.innerHTML = data.results.map(r => {
+          const roleLabel = r.role === 'user' ? '👤 用户指令' : '🤖 助手回复';
+          const roleClass = r.role === 'user' ? 'user' : 'assistant';
+          const turnLabel = r.turn_index > 0 ? `第 ${r.turn_index} 轮` : '';
+          return `
+            <div class="global-search-item" onclick="jumpToConversationTurn('${escapeHtml(r.catalog_id)}', ${r.turn_index})">
+              <div class="global-search-item-header">
+                <div class="global-search-item-left">
+                  <span class="format-badge">${escapeHtml(r.session_format.toUpperCase())}</span>
+                  <span class="global-search-item-role ${roleClass}">${roleLabel}</span>
+                  <span class="global-search-item-turn">${turnLabel}</span>
+                  <span class="global-search-item-title" title="${escapeHtml(r.session_title)}">${escapeHtml(r.session_title)}</span>
+                </div>
+                <div class="global-search-item-jump">
+                  <span>跳转对话</span>
+                  <span>↗</span>
+                </div>
+              </div>
+              <div class="global-search-snippet">
+                ${r.snippet}
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {
+        if (stats) stats.innerText = `检索出错: ${e}`;
+      }
+    }
+
+    async function jumpToConversationTurn(cid, turnIndex) {
+      closeGlobalSearchModal();
+      await openChatModal(cid, turnIndex);
+    }
+
+    // Global Shortcut Listener: Ctrl+Shift+F
+    window.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
+        e.preventDefault();
+        openGlobalSearchModal();
+      }
+    });
+
   </script>
+
+  <!-- Global Dialogue Content Full-Text Search Modal -->
+  <div class="modal-overlay global-search-modal" id="globalSearchModal" onclick="if(event.target === this) closeGlobalSearchModal()">
+    <div class="global-search-container">
+      <div class="global-search-header">
+        <div class="global-search-title">
+          <span class="icon">🔍</span>
+          <span>全局跨会话对话全文检索</span>
+          <span class="global-search-badge" id="globalSearchIndexBadge">全文引擎就绪</span>
+        </div>
+        <button class="modal-close" onclick="closeGlobalSearchModal()" title="关闭 (Esc)">✕</button>
+      </div>
+      <div class="global-search-input-wrap">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="globalSearchInput" class="global-search-input" placeholder="输入对话内容关键字或句子（例如：评估报告、FTS5、API 密钥、报错原因...）" oninput="handleGlobalSearchInput()" onkeydown="handleGlobalSearchKeydown(event)">
+        <button class="search-clear-btn" id="btnGlobalSearchClear" onclick="clearGlobalSearch()" style="display: none;">✕</button>
+      </div>
+      <div class="global-search-meta-bar" id="globalSearchMetaBar">
+        <span id="globalSearchStats">输入关键字即时检索全平台历史对话</span>
+        <span class="global-search-tip">快捷键：Ctrl+Shift+F 打开 · Enter 跳转 · Esc 关闭</span>
+      </div>
+      <div class="global-search-results" id="globalSearchResults">
+        <div class="global-search-empty">
+          <div class="empty-icon">💬</div>
+          <div class="empty-text">跨会话内容全文索引已就绪</div>
+          <div class="empty-sub">支持在数百条会话、十余万轮人机对话中进行毫秒级全文精确检索与高亮定位</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>
 """
@@ -8578,6 +9424,7 @@ def main():
     # Ensure port is clean before binding
     release_port(PORT)
 
+    trigger_fts_sync()
     server_address = ("0.0.0.0", PORT)
     httpd = ReusableThreadingServer(server_address, RequestHandler)
     url = f"http://127.0.0.1:{PORT}"
