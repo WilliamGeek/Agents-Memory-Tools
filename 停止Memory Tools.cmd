@@ -1,25 +1,38 @@
 @echo off
 setlocal
-title Stop Memory Tools Service
-cd /d "%~dp0"
+chcp 65001 >nul
 
-echo ========================================================
-echo   Stopping Memory Tools Server (Port 18922)...
-echo ========================================================
+set "ROOT_DIR=%~dp0"
+if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
+cd /d "%ROOT_DIR%"
+
+echo ======================================================================
+echo   Stopping Agents Memory Tools Services on Ports 18922 and 3000
+echo ======================================================================
 echo.
 
-set FOUND=0
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":18922" ^| findstr "LISTENING"') do (
-    echo [Info] Terminating process PID %%a ...
-    taskkill /F /PID %%a >nul 2>&1
-    set FOUND=1
+set STOPPED_ANY=0
+
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :18922 ^| findstr LISTENING') do (
+    if not "%%a"=="0" (
+        echo [Info] Stopping Python Engine PID %%a ...
+        taskkill /F /PID %%a >nul 2>&1
+        set STOPPED_ANY=1
+    )
 )
 
-if "%FOUND%"=="1" (
-    echo [Success] Memory Tools server stopped successfully.
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :3000 ^| findstr LISTENING') do (
+    if not "%%a"=="0" (
+        echo [Info] Stopping Next.js Studio PID %%a ...
+        taskkill /F /PID %%a >nul 2>&1
+        set STOPPED_ANY=1
+    )
+)
+
+if "%STOPPED_ANY%"=="1" (
+    echo [Success] All Agents Memory Tools services stopped cleanly.
 ) else (
-    echo [Info] No active Memory Tools server found on port 18922.
+    echo [Info] No active services found on port 18922 or port 3000.
 )
 
 echo.
-ping 127.0.0.1 -n 3 >nul

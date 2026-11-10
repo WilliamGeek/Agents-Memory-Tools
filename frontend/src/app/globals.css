@@ -1,0 +1,227 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   设计令牌：浅色纸张 + 单一蓝色强调，层级靠版式而非压字号
+   ============================================================ */
+:root {
+  --canvas: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #fafbfc;
+  --surface-3: #f1f3f6;
+  --border: #e4e7ec;
+  --border-strong: #d3d9e2;
+  --ink: #171c22;
+  --ink-2: #3d4753;
+  --muted: #6b7683;
+  --faint: #98a2b0;
+  --accent: #1f6feb;
+  --accent-ink: #1052c4;
+  --accent-soft: #eef4ff;
+  --danger: #cf222e;
+  --danger-soft: #fff1f0;
+  --ok: #1a7f37;
+  --ok-soft: #eefaf1;
+  --warn: #9a6700;
+  --warn-soft: #fff8e6;
+}
+
+* {
+  border-color: var(--border);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: var(--canvas);
+  color: var(--ink);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: #d7e5ff;
+  color: var(--accent-ink);
+}
+
+/* 细滚动条 */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cdd4de;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b6bfcb;
+  background-clip: content-box;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* 焦点环 */
+.focus-ring:focus-visible,
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 6px;
+}
+
+/* 数字等宽，便于纵向对齐 */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, 'JetBrains Mono', Consolas, monospace;
+}
+
+/* ============================================================
+   动效：短、轻、不抢注意力
+   ============================================================ */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes slideLeft {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.anim-fade {
+  animation: fadeIn 120ms ease-out both;
+}
+.anim-up {
+  animation: slideUp 160ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.anim-left {
+  animation: slideLeft 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* ============================================================
+   会话正文的 Markdown 排版
+   ============================================================ */
+.md-body {
+  color: var(--ink-2);
+  font-size: 13.5px;
+  line-height: 1.75;
+  word-break: break-word;
+}
+.md-body > * + * {
+  margin-top: 0.7em;
+}
+.md-body h3,
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  color: var(--ink);
+  font-weight: 600;
+  line-height: 1.4;
+  margin-top: 1.2em;
+}
+.md-body h3 {
+  font-size: 15px;
+}
+.md-body h4 {
+  font-size: 14px;
+}
+.md-body h5,
+.md-body h6 {
+  font-size: 13px;
+}
+.md-body strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+.md-body a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md-body code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.92em;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  color: #b4315c;
+}
+.md-body pre {
+  background: #fbfcfd;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+.md-body pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.md-body ul,
+.md-body ol {
+  padding-left: 1.35em;
+}
+.md-body ul {
+  list-style: disc;
+}
+.md-body ol {
+  list-style: decimal;
+}
+.md-body li + li {
+  margin-top: 0.25em;
+}
+.md-body blockquote {
+  border-left: 3px solid var(--border-strong);
+  padding-left: 12px;
+  color: var(--muted);
+}
+.md-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+}
+.md-body del {
+  color: var(--faint);
+}

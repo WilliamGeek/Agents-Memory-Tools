@@ -112,15 +112,22 @@ pip install -r requirements.txt
 # 或手动安装关键组件:
 pip install session-migrate tiktoken tokenizers bottle
 
-# 4. 启动可视化控制台
+# 4. 前端工作台依赖（Node.js 20+）
+cd frontend
+npm install
+npm run build
+cd ..
+
+# 5. 启动可视化控制台
 python web_app.py
 ```
 
-服务就绪后，将在浏览器中自动打开 `http://127.0.0.1:18922`。
+服务就绪后，后端 API 监听 `http://127.0.0.1:18922`，前端工作台监听 `http://localhost:3000`。
+只启动 `web_app.py` 时仍可使用内置单页界面，双服务模式则提供 React 版工作台（首次启动会自动构建）。
 
 > 💡 **Windows 便捷启动**：
-> 目录下已内置两个脚本：
-> - `启动Memory Tools.cmd`：控制台交互启动
+> 目录下已内置三个脚本：
+> - `启动Memory Tools.cmd`：一键拉起前后端（缺构建产物时自动编译）
 > - `后台静默启动Memory Tools.vbs`：后台无窗口静默常驻
 > - `停止Memory Tools.cmd`：一键终止后台服务
 
