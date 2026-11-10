@@ -961,7 +961,13 @@ def antigravity_first_user_text(db_path: Path, limit: int = 48) -> str:
                 continue
             candidate = body.decode("utf-8", "ignore").strip()
             if candidate:
-                text = clean_human_title(candidate.splitlines()[0].strip())
+                lines = [ln.strip() for ln in candidate.splitlines() if ln.strip()]
+                merged = ""
+                for ln in lines[:6]:
+                    merged = f"{merged} {ln}".strip() if merged else ln
+                    if len(merged) >= 12:
+                        break
+                text = clean_human_title(merged)
                 if text:
                     break
     except Exception:
@@ -1603,6 +1609,31 @@ def _enrich_session_events_for_detail(
                 t_cursor += 1
 
 
+def _wb_first_record_timestamp(jsonl_path: Path) -> float | None:
+    """读取 jsonl 首条带 timestamp 的记录，返回秒级时间戳（兼容毫秒）。"""
+    try:
+        with open(jsonl_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                ts = rec.get("timestamp")
+                if not ts:
+                    continue
+                try:
+                    val = float(ts)
+                except (TypeError, ValueError):
+                    continue
+                return val / 1000.0 if val > 1e11 else val
+    except Exception:
+        return None
+    return None
+
+
 def get_workbuddy_sessions() -> list[dict[str, Any]]:
     wb_dir = Path(r"C:\Users\HP\.workbuddy")
     db_path = wb_dir / "workbuddy.db"
@@ -1626,19 +1657,40 @@ def get_workbuddy_sessions() -> list[dict[str, Any]]:
             raw_title = meta.get("title")
             created_at = meta.get("created_at")
             
-            date_str = ""
+            # 真实时间口径：优先 DB 的 created_at（毫秒），退回 jsonl 首条记录时间，最后退回文件 mtime。
+            # 统一按本地时区渲染，避免出现"所有会话都是 12:00"的伪时间，以及 UTC 换算导致的跨日错位。
+            created_dt: datetime | None = None
             if created_at:
                 try:
-                    dt = datetime.fromtimestamp(created_at / 1000, tz=timezone.utc)
-                    date_str = dt.strftime("%Y-%m-%d")
-                except:
-                    pass
-            if not date_str:
+                    ts_val = float(created_at)
+                except (TypeError, ValueError):
+                    ts_val = 0.0
+                if ts_val > 1e11:
+                    ts_val /= 1000.0
+                if ts_val > 0:
+                    try:
+                        created_dt = datetime.fromtimestamp(ts_val)
+                    except (OverflowError, OSError, ValueError):
+                        created_dt = None
+            if created_dt is None:
+                first_ts = _wb_first_record_timestamp(j)
+                if first_ts:
+                    try:
+                        created_dt = datetime.fromtimestamp(first_ts)
+                    except (OverflowError, OSError, ValueError):
+                        created_dt = None
+            if created_dt is None:
                 try:
-                    dt = datetime.fromtimestamp(j.stat().st_mtime, tz=timezone.utc)
-                    date_str = dt.strftime("%Y-%m-%d")
-                except:
-                    date_str = "2026-09-01"
+                    created_dt = datetime.fromtimestamp(j.stat().st_mtime)
+                except (OSError, ValueError):
+                    created_dt = None
+
+            if created_dt is not None:
+                date_str = created_dt.strftime("%Y-%m-%d")
+                started_at_str = created_dt.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                date_str = "2026-09-01"
+                started_at_str = ""
 
             if not raw_title:
                 try:
@@ -1676,7 +1728,7 @@ def get_workbuddy_sessions() -> list[dict[str, Any]]:
                 "format": "workbuddy",
                 "session_id": sid,
                 "title": title,
-                "started_at": f"{date_str} 12:00:00",
+                "started_at": started_at_str,
                 "records": records_count,
                 "bytes": wb_stat.st_size,
                 **_token_fields(wb_tok),
@@ -2161,6 +2213,47 @@ def clean_human_title(text: str) -> str:
         text = text[:40].rstrip(" ._-")
     return text
 
+def _ag_local_time_str(value: Any) -> str:
+    """把 ISO8601（UTC，带 Z）时间戳转成本地时区的 'YYYY-MM-DD HH:MM:SS'。"""
+    if not value:
+        return ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return s
+
+
+# 会话标识串：32 位裸十六进制、带连字符 UUID、以及 sessionID/工具调用 id 之类。
+# Antigravity 的 protobuf 里这些字段与人类标题同层出现，必须排除，否则卡片标题会变成一串 id。
+_AG_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+_AG_HEX32_RE = re.compile(r"^[0-9a-f]{32}$", re.I)
+_AG_HEXISH_RE = re.compile(r"^[0-9a-f]{16,}$", re.I)
+_AG_TOKEN_RE = re.compile(r"^[0-9a-zA-Z_\-]+$")
+
+
+def _ag_looks_like_id(text: str) -> bool:
+    """判断候选串是否是机器标识而非人类可读标题。"""
+    t = (text or "").strip()
+    if not t:
+        return True
+    if "sessionID" in t or "conversation_summaries" in t:
+        return True
+    if _AG_UUID_RE.match(t) or _AG_HEX32_RE.match(t) or _AG_HEXISH_RE.match(t):
+        return True
+    # 单段无空格的 ASCII 串，且数字占比高 → 判为 id（避免误伤 Retrofitting 这类正常英文标题）
+    if _AG_TOKEN_RE.match(t) and len(t) >= 20:
+        digits = sum(ch.isdigit() for ch in t)
+        if digits >= 8:
+            return True
+    return False
+
+
 _ANTIGRAVITY_TITLE_CACHE: dict[str, tuple[float, str]] = {}
 
 def extract_antigravity_title(abs_path: Path) -> str:
@@ -2189,7 +2282,7 @@ def extract_antigravity_title(abs_path: Path) -> str:
                 if m:
                     try:
                         s = m.group(2).decode("utf-8").strip()
-                        if not re.match(r"^[0-9a-f\-]{36}$", s) and "sessionID" not in s and len(s) >= 2:
+                        if not _ag_looks_like_id(s) and len(s) >= 2:
                             title = clean_human_title(s)
                             if title:
                                 break
@@ -2205,7 +2298,7 @@ def extract_antigravity_title(abs_path: Path) -> str:
                             raw = payload[start:start+length]
                             try:
                                 s = raw.decode("utf-8").strip()
-                                if not re.match(r"^[0-9a-f\-]{36}$", s) and "sessionID" not in s and len(s) >= 2:
+                                if not _ag_looks_like_id(s) and len(s) >= 2:
                                     title = clean_human_title(s)
                                     if title:
                                         break
@@ -2239,7 +2332,7 @@ def extract_antigravity_title(abs_path: Path) -> str:
                         c = c.strip()
                         if any(skip in c for skip in ["Conversation History", "conversation_summaries", "file:///", "USER_REQUEST"]):
                             continue
-                        if len(c) >= 3 and not re.match(r"^[0-9a-f\-]{36}$", c):
+                        if len(c) >= 3 and not _ag_looks_like_id(c):
                             title = clean_human_title(c)
                             if title:
                                 break
@@ -2251,6 +2344,10 @@ def extract_antigravity_title(abs_path: Path) -> str:
         conn.close()
     except Exception:
         pass
+
+    # 最后一道闸门：清洗后若仍是机器标识，按"无标题"处理，交给上层用父会话/首条提问兜底
+    if title and _ag_looks_like_id(title):
+        title = ""
 
     _ANTIGRAVITY_TITLE_CACHE[path_str] = (mtime, title)
     return title
@@ -2563,8 +2660,9 @@ def collect_all_sessions(fmt_filter: str = "all", search: str = "") -> list[dict
         # Formulate natural language descriptive title
         title = ""
         date_str = ""
-        if row["started_at"]:
-            date_str = row["started_at"].split("T")[0]
+        local_started = _ag_local_time_str(row["started_at"])
+        if local_started:
+            date_str = local_started[:10]
 
         if fmt == "antigravity":
             short_sid = sid[:8].lower()
@@ -2576,8 +2674,17 @@ def collect_all_sessions(fmt_filter: str = "all", search: str = "") -> list[dict
             if not clean_t and short_sid in readable_map:
                 clean_t = readable_map[short_sid].get("title", "")
             if not clean_t:
+                # 子代理（browser 等）会话在 conversation_summaries 里 title 恒为空，
+                # 只能回溯父链，给出「父标题 · xxx 子会话」，别再退化成 会话_xxxxxxxx。
+                parent_title, agent_name = antigravity_parent_title(sid, ag_summaries)
+                if parent_title:
+                    clean_t = f"{parent_title} · {agent_name or '子代理'} 子会话"
+            if not clean_t:
+                # 官方标题缺失时，用会话首条用户提问作为标题
+                clean_t = antigravity_first_user_text(abs_path)
+            if not clean_t:
                 raw_dt = row["display_title"] or ""
-                if raw_dt and not re.match(r"^[0-9a-f\-]{36}$", raw_dt) and not re.match(r"^[0-9a-f]{32}$", raw_dt):
+                if raw_dt and not _ag_looks_like_id(raw_dt):
                     clean_t = clean_human_title(raw_dt)
             if not clean_t:
                 clean_t = f"会话_{sid[:8]}"
@@ -2606,7 +2713,7 @@ def collect_all_sessions(fmt_filter: str = "all", search: str = "") -> list[dict
             "format": fmt,
             "session_id": sid,
             "title": title,
-            "started_at": row["started_at"] or (datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat() if mtime else ""),
+            "started_at": local_started or (datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S") if mtime else ""),
             "records": row["records"] or 0,
             "bytes": s_bytes,
             **_token_fields(tok_info),
@@ -2669,7 +2776,9 @@ def collect_all_sessions(fmt_filter: str = "all", search: str = "") -> list[dict
                         pass
                 started_at_str = ag_summaries.get(sid, {}).get("last_modified_time")
                 if not started_at_str:
-                    started_at_str = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+                    started_at_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    started_at_str = _ag_local_time_str(started_at_str)
                 ag_size = p.stat().st_size
                 ag_tok = compute_session_tokens("antigravity", sid, p, mtime, ag_size)
                 ag_info = ag_summaries.get(sid, {})
