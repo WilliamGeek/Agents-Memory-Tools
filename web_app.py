@@ -2558,43 +2558,244 @@ def extract_dialogue_turns_for_fts(path: Path, fmt: str) -> list[dict]:
         pass
     return turns
 
+def collect_all_sessions(fmt_filter: str = "all", search: str = "") -> list[dict]:
+    readable_map = load_brain_readable_map()
+    ag_summaries = load_antigravity_summaries_map()
+
+    db = get_catalog_db()
+    sql = """
+        SELECT s.id, s.catalog_id, s.format, s.session_id, s.display_title, s.started_at,
+               s.status, s.records, s.bytes, s.relative_path, r.path as root_path
+        FROM sessions s
+        JOIN roots r ON s.root_id = r.id
+        WHERE s.status != 'missing'
+    """
+    params = []
+    if fmt_filter and fmt_filter not in {"all", "workbuddy", "trae"}:
+        sql += " AND s.format = ?"
+        params.append(fmt_filter)
+
+    sql += " ORDER BY s.started_at DESC"
+    rows = db.execute(sql, params).fetchall() if fmt_filter not in {"workbuddy", "trae"} else []
+    db.close()
+
+    results = []
+    seen_sids = set()
+
+    for row in rows:
+        abs_path = Path(row["root_path"]) / row["relative_path"]
+        sid = row["session_id"] or abs_path.stem
+        fmt = row["format"]
+        if sid in seen_sids:
+            continue
+        seen_sids.add(sid)
+        mtime = abs_path.stat().st_mtime if abs_path.exists() else 0
+        
+        # Formulate natural language descriptive title
+        title = ""
+        date_str = ""
+        if row["started_at"]:
+            date_str = row["started_at"].split("T")[0]
+
+        if fmt == "antigravity":
+            short_sid = sid[:8].lower()
+            clean_t = ""
+            if sid in ag_summaries and ag_summaries[sid].get("title"):
+                clean_t = ag_summaries[sid]["title"]
+            if not clean_t:
+                clean_t = extract_antigravity_title(abs_path)
+            if not clean_t and short_sid in readable_map:
+                clean_t = readable_map[short_sid].get("title", "")
+            if not clean_t:
+                raw_dt = row["display_title"] or ""
+                if raw_dt and not re.match(r"^[0-9a-f\-]{36}$", raw_dt) and not re.match(r"^[0-9a-f]{32}$", raw_dt):
+                    clean_t = clean_human_title(raw_dt)
+            if not clean_t:
+                clean_t = f"会话_{sid[:8]}"
+
+            d = date_str or (datetime.fromtimestamp(mtime).strftime("%Y-%m-%d") if mtime else "2026-10-10")
+            title = f"{d} · {clean_t}"
+        elif fmt == "claude":
+            c_title, c_date = extract_claude_title_and_date(abs_path)
+            d = date_str or c_date
+            title = f"{d} · {c_title}"
+        else:
+            d = date_str or "2026-01-01"
+            raw_t = row["display_title"] or sid[:8]
+            title = f"{d} · {raw_t}"
+
+        # Search filtering
+        if search:
+            haystack = f"{title} {sid} {fmt} {str(abs_path)}".lower()
+            if search not in haystack:
+                continue
+
+        s_bytes = row["bytes"] or (abs_path.stat().st_size if abs_path.exists() else 0)
+        tok_info = compute_session_tokens(fmt, sid, abs_path if abs_path.exists() else None, mtime, s_bytes)
+        catalog_entry = {
+            "catalog_id": row["catalog_id"],
+            "format": fmt,
+            "session_id": sid,
+            "title": title,
+            "started_at": row["started_at"] or (datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat() if mtime else ""),
+            "records": row["records"] or 0,
+            "bytes": s_bytes,
+            **_token_fields(tok_info),
+            "file_path": str(abs_path),
+            "exists": abs_path.exists(),
+            "mtime": mtime,
+        }
+        if fmt == "antigravity" and abs_path.exists():
+            try:
+                with sqlite3.connect(f"file:{str(abs_path)}?mode=ro", uri=True) as ag_conn:
+                    catalog_entry["records"] = ag_conn.execute("SELECT count(*) FROM steps").fetchone()[0]
+            except Exception:
+                pass
+            catalog_entry["lineage"] = antigravity_lineage_key(abs_path)
+            catalog_entry["side_question"] = antigravity_side_question(abs_path)
+            ag_info = ag_summaries.get(sid, {})
+            catalog_entry["parent_id"] = (ag_info.get("parent_id") or "").strip()
+            catalog_entry["nesting_depth"] = ag_info.get("nesting_depth") or 0
+            catalog_entry["agent_name"] = (ag_info.get("agent_name") or "").strip()
+        results.append(catalog_entry)
+
+    # Directly merge any Antigravity conversation .db files that were missed or new
+    if fmt_filter in {"all", "antigravity", ""}:
+        for ag_conv_dir in ANTIGRAVITY_CONV_DIRS:
+            if not ag_conv_dir.exists():
+                continue
+            for p in ag_conv_dir.glob("*.db"):
+                if p.name.endswith("-wal") or p.name.endswith("-shm") or p.stat().st_size == 0:
+                    continue
+                sid = p.stem
+                if sid in seen_sids:
+                    continue
+                seen_sids.add(sid)
+                mtime = p.stat().st_mtime
+                d = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+                clean_t = ""
+                if sid in ag_summaries and ag_summaries[sid].get("title"):
+                    clean_t = ag_summaries[sid]["title"]
+                if not clean_t:
+                    clean_t = extract_antigravity_title(p)
+                if not clean_t:
+                    parent_title, agent_name = antigravity_parent_title(sid, ag_summaries)
+                    if parent_title:
+                        clean_t = f"{parent_title} · {agent_name or '子代理'} 子会话"
+                if not clean_t:
+                    clean_t = antigravity_first_user_text(p)
+                if not clean_t:
+                    clean_t = f"会话_{sid[:8]}"
+                title = f"{d} · {clean_t}"
+                if search:
+                    haystack = f"{title} {sid} antigravity {str(p)}".lower()
+                    if search not in haystack:
+                        continue
+                steps_count = ag_summaries.get(sid, {}).get("step_count", 0)
+                if not steps_count:
+                    try:
+                        with sqlite3.connect(f"file:{str(p)}?mode=ro", uri=True) as c:
+                            steps_count = c.execute("SELECT count(*) FROM steps").fetchone()[0]
+                    except Exception:
+                        pass
+                started_at_str = ag_summaries.get(sid, {}).get("last_modified_time")
+                if not started_at_str:
+                    started_at_str = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+                ag_size = p.stat().st_size
+                ag_tok = compute_session_tokens("antigravity", sid, p, mtime, ag_size)
+                ag_info = ag_summaries.get(sid, {})
+                results.append({
+                    "catalog_id": f"ag_{sid[:12]}",
+                    "format": "antigravity",
+                    "session_id": sid,
+                    "title": title,
+                    "started_at": started_at_str,
+                    "records": steps_count,
+                    "bytes": ag_size,
+                    "lineage": antigravity_lineage_key(p),
+                    "side_question": antigravity_side_question(p),
+                    "parent_id": (ag_info.get("parent_id") or "").strip(),
+                    "nesting_depth": ag_info.get("nesting_depth") or 0,
+                    "agent_name": (ag_info.get("agent_name") or "").strip(),
+                    **_token_fields(ag_tok),
+                    "file_path": str(p),
+                    "exists": True,
+                    "mtime": mtime,
+                })
+
+    # Append WorkBuddy sessions
+    if fmt_filter in {"all", "workbuddy", ""}:
+        wb_list = get_workbuddy_sessions()
+        for w in wb_list:
+            if search:
+                haystack = f"{w['title']} {w['session_id']} workbuddy {w['file_path']}".lower()
+                if search not in haystack:
+                    continue
+            w_path = Path(w["file_path"])
+            w["mtime"] = w_path.stat().st_mtime if w_path.exists() else 0
+            results.append(w)
+
+    # Append Trae sessions
+    if fmt_filter in {"all", "trae", ""}:
+        trae_list = get_trae_sessions()
+        for t in trae_list:
+            if search:
+                haystack = f"{t['title']} {t['session_id']} trae {t['file_path']}".lower()
+                if search not in haystack:
+                    continue
+            t_path = Path(t["file_path"])
+            t["mtime"] = t_path.stat().st_mtime if t_path.exists() else 0
+            results.append(t)
+
+    flush_token_cache()
+    _mark_antigravity_lineage(results)
+    _mark_antigravity_children(results)
+    return results
+
 def _run_fts_sync_worker():
     global _FTS_SYNC_IN_PROGRESS
     if _FTS_SYNC_IN_PROGRESS:
         return
     _FTS_SYNC_IN_PROGRESS = True
     try:
-        # Collect session targets from catalog database and disk
-        items_to_sync = []
+        all_sessions = collect_all_sessions(fmt_filter="all")
+
+        # 1. Update existing titles in conversation_fts where title is outdated or placeholder (e.g. 会话_xxxx)
         try:
-            with Catalog(default_catalog_path()) as cat:
-                for entry in cat.iter_sessions():
-                    p = Path(entry.canonical_path)
-                    if p.exists() and p.stat().st_size > 0:
-                        fmt_str = entry.format.value if hasattr(entry.format, "value") else str(entry.format)
-                        items_to_sync.append((p, fmt_str, entry.catalog_id, entry.session_id, entry.display_title or entry.session_id))
+            with GLOBAL_FTS_MGR._get_conn() as conn:
+                for s in all_sessions:
+                    sid = s.get("session_id")
+                    title = s.get("title")
+                    if sid and title:
+                        conn.execute(
+                            """
+                            UPDATE conversation_fts 
+                            SET session_title = ? 
+                            WHERE session_id = ? AND (session_title != ? OR session_title LIKE '会话_%')
+                            """,
+                            (title, sid, title)
+                        )
         except Exception:
             pass
 
-        # Also Antigravity active files
-        for d in ANTIGRAVITY_CONV_DIRS:
-            if not d.exists():
-                continue
-            for p in d.glob("*.db"):
-                if p.name.endswith("-wal") or p.name.endswith("-shm") or p.stat().st_size == 0:
-                    continue
-                sid = p.stem
-                cid = f"ag_{sid[:12]}"
-                if not any(item[0] == p for item in items_to_sync):
-                    items_to_sync.append((p, "antigravity", cid, sid, f"会话_{sid[:8]}"))
-
-        # Incrementally index
+        # 2. Incrementally index turns
         synced_count = 0
-        for p, fmt_str, cid, sid, title in items_to_sync:
+        for s in all_sessions:
             try:
+                p_str = s.get("file_path")
+                if not p_str:
+                    continue
+                p = Path(p_str)
+                if not p.exists() or p.stat().st_size == 0:
+                    continue
                 st = p.stat()
                 mtime = st.st_mtime
                 size = st.st_size
+                cid = s.get("catalog_id") or f"ag_{s.get('session_id')[:12]}"
+                sid = s.get("session_id")
+                fmt_str = s.get("format")
+                title = s.get("title")
+
                 if GLOBAL_FTS_MGR.is_file_up_to_date(str(p), mtime, size):
                     continue
                 turns = extract_dialogue_turns_for_fts(p, fmt_str)
@@ -2821,222 +3022,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                     if search not in haystack:
                         continue
                 results.append(item)
-            sort_by = query.get("sort_by", ["mtime"])[0].strip()
-            sort_order = query.get("order", ["desc"])[0].strip().lower()
-            is_desc = (sort_order != "asc")
-            def get_sort_key_cached(item):
-                if sort_by == "mtime":
-                    return float(item.get("mtime") or 0)
-                elif sort_by == "started_at":
-                    return str(item.get("started_at") or "")
-                elif sort_by == "bytes":
-                    return int(item.get("bytes") or 0)
-                elif sort_by == "tokens":
-                    return int(item.get("tokens") or 0)
-                elif sort_by == "records":
-                    return int(item.get("records") or 0)
-                elif sort_by == "title":
-                    return str(item.get("title") or "").lower()
-                elif sort_by == "format":
-                    return str(item.get("format") or "").lower()
-                return float(item.get("mtime") or 0)
-            results.sort(key=get_sort_key_cached, reverse=is_desc)
-            self.send_json({"sessions": results, "count": len(results)})
-            return
+        else:
+            results = collect_all_sessions(fmt_filter=fmt_filter, search=search)
+            if not fmt_filter or fmt_filter == "all":
+                _GLOBAL_SESSIONS_CACHE["ts"] = time.time()
+                _GLOBAL_SESSIONS_CACHE["data"] = list(results)
 
-        readable_map = load_brain_readable_map()
-        ag_summaries = load_antigravity_summaries_map()
-
-        db = get_catalog_db()
-        sql = """
-            SELECT s.id, s.catalog_id, s.format, s.session_id, s.display_title, s.started_at,
-                   s.status, s.records, s.bytes, s.relative_path, r.path as root_path
-            FROM sessions s
-            JOIN roots r ON s.root_id = r.id
-            WHERE s.status != 'missing'
-        """
-        params = []
-        if fmt_filter and fmt_filter not in {"all", "workbuddy", "trae"}:
-            sql += " AND s.format = ?"
-            params.append(fmt_filter)
-
-        sql += " ORDER BY s.started_at DESC"
-        rows = db.execute(sql, params).fetchall() if fmt_filter not in {"workbuddy", "trae"} else []
-        db.close()
-
-        results = []
-        seen_sids = set()
-
-        for row in rows:
-            abs_path = Path(row["root_path"]) / row["relative_path"]
-            sid = row["session_id"] or abs_path.stem
-            fmt = row["format"]
-            if sid in seen_sids:
-                continue
-            seen_sids.add(sid)
-            mtime = abs_path.stat().st_mtime if abs_path.exists() else 0
-            
-            # Formulate brain_readable formatted title
-            title = ""
-            date_str = ""
-            if row["started_at"]:
-                date_str = row["started_at"].split("T")[0]
-
-            if fmt == "antigravity":
-                short_sid = sid[:8].lower()
-                clean_t = ""
-                if sid in ag_summaries and ag_summaries[sid].get("title"):
-                    clean_t = ag_summaries[sid]["title"]
-                if not clean_t:
-                    clean_t = extract_antigravity_title(abs_path)
-                if not clean_t and short_sid in readable_map:
-                    clean_t = readable_map[short_sid].get("title", "")
-                if not clean_t:
-                    raw_dt = row["display_title"] or ""
-                    if raw_dt and not re.match(r"^[0-9a-f\-]{36}$", raw_dt) and not re.match(r"^[0-9a-f]{32}$", raw_dt):
-                        clean_t = clean_human_title(raw_dt)
-                if not clean_t:
-                    clean_t = f"会话_{sid[:8]}"
-
-                d = date_str or (datetime.fromtimestamp(mtime).strftime("%Y-%m-%d") if mtime else "2026-10-10")
-                title = f"{d} · {clean_t}"
-            elif fmt == "claude":
-                c_title, c_date = extract_claude_title_and_date(abs_path)
-                d = date_str or c_date
-                title = f"{d} · {c_title}"
-            else:
-                d = date_str or "2026-01-01"
-                raw_t = row["display_title"] or sid[:8]
-                title = f"{d} · {raw_t}"
-
-            # Search filtering
-            if search:
-                haystack = f"{title} {sid} {fmt} {str(abs_path)}".lower()
-                if search not in haystack:
-                    continue
-
-            s_bytes = row["bytes"] or (abs_path.stat().st_size if abs_path.exists() else 0)
-            tok_info = compute_session_tokens(fmt, sid, abs_path if abs_path.exists() else None, mtime, s_bytes)
-            catalog_entry = {
-                "catalog_id": row["catalog_id"],
-                "format": fmt,
-                "session_id": sid,
-                "title": title,
-                "started_at": row["started_at"] or (datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat() if mtime else ""),
-                "records": row["records"] or 0,
-                "bytes": s_bytes,
-                **_token_fields(tok_info),
-                "file_path": str(abs_path),
-                "exists": abs_path.exists(),
-                "mtime": mtime,
-            }
-            if fmt == "antigravity" and abs_path.exists():
-                # 索引库里的步数会滞后（会话还在增长），血缘/旁问标记也只存在于
-                # 实时扫描里；这里用磁盘真实值覆盖，保证与未入库会话口径一致
-                try:
-                    with sqlite3.connect(f"file:{str(abs_path)}?mode=ro", uri=True) as ag_conn:
-                        catalog_entry["records"] = ag_conn.execute("SELECT count(*) FROM steps").fetchone()[0]
-                except Exception:
-                    pass
-                catalog_entry["lineage"] = antigravity_lineage_key(abs_path)
-                catalog_entry["side_question"] = antigravity_side_question(abs_path)
-                ag_info = ag_summaries.get(sid, {})
-                catalog_entry["parent_id"] = (ag_info.get("parent_id") or "").strip()
-                catalog_entry["nesting_depth"] = ag_info.get("nesting_depth") or 0
-                catalog_entry["agent_name"] = (ag_info.get("agent_name") or "").strip()
-            results.append(catalog_entry)
-
-        # Directly merge any Antigravity conversation .db files that were missed or new
-        if fmt_filter in {"all", "antigravity", ""}:
-            for ag_conv_dir in ANTIGRAVITY_CONV_DIRS:
-                if not ag_conv_dir.exists():
-                    continue
-                for p in ag_conv_dir.glob("*.db"):
-                    if p.name.endswith("-wal") or p.name.endswith("-shm") or p.stat().st_size == 0:
-                        continue
-                    sid = p.stem
-                    if sid in seen_sids:
-                        continue
-                    seen_sids.add(sid)
-                    mtime = p.stat().st_mtime
-                    d = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
-                    clean_t = ""
-                    if sid in ag_summaries and ag_summaries[sid].get("title"):
-                        clean_t = ag_summaries[sid]["title"]
-                    if not clean_t:
-                        clean_t = extract_antigravity_title(p)
-                    if not clean_t:
-                        # Antigravity 只给顶层会话起名：browser 等子代理会话的 title
-                        # 恒为空。此时继承父会话标题，并标注子会话类型。
-                        parent_title, agent_name = antigravity_parent_title(sid, ag_summaries)
-                        if parent_title:
-                            clean_t = f"{parent_title} · {agent_name or '子代理'} 子会话"
-                    if not clean_t:
-                        clean_t = antigravity_first_user_text(p)
-                    if not clean_t:
-                        clean_t = f"会话_{sid[:8]}"
-                    title = f"{d} · {clean_t}"
-                    if search:
-                        haystack = f"{title} {sid} antigravity {str(p)}".lower()
-                        if search not in haystack:
-                            continue
-                    steps_count = ag_summaries.get(sid, {}).get("step_count", 0)
-                    if not steps_count:
-                        try:
-                            with sqlite3.connect(f"file:{str(p)}?mode=ro", uri=True) as c:
-                                steps_count = c.execute("SELECT count(*) FROM steps").fetchone()[0]
-                        except Exception:
-                            pass
-                    started_at_str = ag_summaries.get(sid, {}).get("last_modified_time")
-                    if not started_at_str:
-                        started_at_str = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
-                    ag_size = p.stat().st_size
-                    ag_tok = compute_session_tokens("antigravity", sid, p, mtime, ag_size)
-                    ag_info = ag_summaries.get(sid, {})
-                    results.append({
-                        "catalog_id": f"ag_{sid[:12]}",
-                        "format": "antigravity",
-                        "session_id": sid,
-                        "title": title,
-                        "started_at": started_at_str,
-                        "records": steps_count,
-                        "bytes": ag_size,
-                        "lineage": antigravity_lineage_key(p),
-                        "side_question": antigravity_side_question(p),
-                        "parent_id": (ag_info.get("parent_id") or "").strip(),
-                        "nesting_depth": ag_info.get("nesting_depth") or 0,
-                        "agent_name": (ag_info.get("agent_name") or "").strip(),
-                        **_token_fields(ag_tok),
-                        "file_path": str(p),
-                        "exists": True,
-                        "mtime": mtime,
-                    })
-
-        # Append WorkBuddy sessions
-        if fmt_filter in {"all", "workbuddy", ""}:
-            wb_list = get_workbuddy_sessions()
-            for w in wb_list:
-                if search:
-                    haystack = f"{w['title']} {w['session_id']} workbuddy {w['file_path']}".lower()
-                    if search not in haystack:
-                        continue
-                w_path = Path(w["file_path"])
-                w["mtime"] = w_path.stat().st_mtime if w_path.exists() else 0
-                results.append(w)
-
-        # Append Trae sessions
-        if fmt_filter in {"all", "trae", ""}:
-            trae_list = get_trae_sessions()
-            for t in trae_list:
-                if search:
-                    haystack = f"{t['title']} {t['session_id']} trae {t['file_path']}".lower()
-                    if search not in haystack:
-                        continue
-                t_path = Path(t["file_path"])
-                t["mtime"] = t_path.stat().st_mtime if t_path.exists() else 0
-                results.append(t)
-
-        # Sort results: most recently active / modified first
         sort_by = query.get("sort_by", ["mtime"])[0].strip()
         sort_order = query.get("order", ["desc"])[0].strip().lower()
         is_desc = (sort_order != "asc")
@@ -3058,13 +3049,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return str(item.get("format") or "").lower()
             return float(item.get("mtime") or 0)
 
-        flush_token_cache()
-        _mark_antigravity_lineage(results)
-        _mark_antigravity_children(results)
-        if not fmt_filter or fmt_filter == "all":
-            _GLOBAL_SESSIONS_CACHE["ts"] = time.time()
-            _GLOBAL_SESSIONS_CACHE["data"] = list(results)
-
         results.sort(key=get_sort_key, reverse=is_desc)
         payload: dict[str, Any] = {"sessions": results, "count": len(results)}
         if fmt_filter in {"", "all", "trae"}:
@@ -3081,6 +3065,32 @@ class RequestHandler(BaseHTTPRequestHandler):
         except Exception:
             limit = 50
         res = GLOBAL_FTS_MGR.search(q, limit=limit)
+
+        # Dynamic natural language descriptive title enrichment
+        title_map = {}
+        if _GLOBAL_SESSIONS_CACHE.get("data"):
+            for s in _GLOBAL_SESSIONS_CACHE["data"]:
+                if s.get("session_id") and s.get("title"):
+                    title_map[s["session_id"]] = s["title"]
+                if s.get("catalog_id") and s.get("title"):
+                    title_map[s["catalog_id"]] = s["title"]
+        else:
+            # Fast title map from Antigravity summaries & brain readable
+            ag_sums = load_antigravity_summaries_map()
+            for sid, info in ag_sums.items():
+                t = info.get("title")
+                if t and not t.startswith("会话_"):
+                    m_time = info.get("last_modified_time") or ""
+                    d = m_time.split()[0] if m_time else "2026-11-06"
+                    title_map[sid] = f"{d} · {t}"
+
+        for item in res.get("results", []):
+            sid = item.get("session_id")
+            cid = item.get("catalog_id")
+            better_title = title_map.get(sid) or title_map.get(cid)
+            if better_title and not better_title.startswith("会话_"):
+                item["session_title"] = better_title
+
         self.send_json(res)
 
     def handle_get_session_detail(self, query: dict[str, list[str]]):
@@ -9645,6 +9655,18 @@ function openRootsModal() {
           const roleClass = r.role === 'user' ? 'user' : 'assistant';
           const turnLabel = r.turn_index > 0 ? `第 ${r.turn_index} 轮` : '';
           const dotColor = AGENT_COLORS[r.session_format] || '#8a8a94';
+
+          // Resolve natural language descriptive title from allSessions if available
+          let displayTitle = r.session_title;
+          const matchedSess = (allSessions || []).find(s =>
+            s.catalog_id === r.catalog_id ||
+            s.session_id === r.session_id ||
+            (r.session_id && s.session_id && s.session_id.startsWith(r.session_id.slice(0, 8)))
+          );
+          if (matchedSess && matchedSess.title && !matchedSess.title.startsWith('会话_')) {
+            displayTitle = matchedSess.title;
+          }
+
           return `
             <div class="global-search-item" onclick="jumpToConversationTurn('${escapeHtml(r.catalog_id)}', ${r.turn_index})">
               <div class="global-search-item-header">
@@ -9652,7 +9674,7 @@ function openRootsModal() {
                   <span class="format-badge" style="--agent-dot: ${dotColor};">${escapeHtml(r.session_format.toUpperCase())}</span>
                   <span class="global-search-item-role ${roleClass}">${roleLabel}</span>
                   <span class="global-search-item-turn">${turnLabel}</span>
-                  <span class="global-search-item-title" title="${escapeHtml(r.session_title)}">${escapeHtml(r.session_title)}</span>
+                  <span class="global-search-item-title" title="${escapeHtml(displayTitle)}">${escapeHtml(displayTitle)}</span>
                 </div>
                 <div class="global-search-item-jump">
                   <span>跳转对话</span>
