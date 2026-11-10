@@ -975,37 +975,6 @@ def antigravity_first_user_text(db_path: Path, limit: int = 48) -> str:
     return text
 
 
-def trae_encrypted_store_notice() -> str:
-    """检测 Trae 新版加密会话库，返回给前端的说明（无则空串）。
-
-    新版 Trae 把会话正文迁进 ModularData/ai-agent/database.db（SQLCipher 风格的
-    加密库，无 SQLite 头、熵 ~8.0），工具无法读取；只剩 .trae-cn/memory 下的摘要
-    jsonl。当加密库明显比最后一份摘要新时，说明有新会话没被索引到。
-    """
-    db = Path(r"C:\Users\HP\AppData\Roaming\Trae CN\ModularData\ai-agent\database.db")
-    if not db.exists():
-        return ""
-    mem_dir = Path(r"C:\Users\HP\.trae-cn\memory\projects")
-    newest = 0.0
-    try:
-        for f in mem_dir.rglob("session_memory_*.jsonl"):
-            newest = max(newest, f.stat().st_mtime)
-    except OSError:
-        return ""
-    try:
-        db_mtime = db.stat().st_mtime
-    except OSError:
-        return ""
-    if db_mtime <= newest + 86400:
-        return ""
-    last = datetime.fromtimestamp(newest).strftime("%Y-%m-%d") if newest else "无"
-    return (
-        "Trae 新版把会话正文与标题存进了加密库（ModularData\\ai-agent\\database.db），"
-        f"工具无法读取；目前只能索引到 {last} 之前的摘要记录。"
-        "该日期之后的 Trae 会话不会出现在列表中，也无法在详情里看到模型回复与工具链。"
-    )
-
-
 def ensure_antigravity_catalog_roots():
     """Ensure ~/.gemini/antigravity is registered in catalog database."""
     try:
@@ -3051,10 +3020,6 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         results.sort(key=get_sort_key, reverse=is_desc)
         payload: dict[str, Any] = {"sessions": results, "count": len(results)}
-        if fmt_filter in {"", "all", "trae"}:
-            notice = trae_encrypted_store_notice()
-            if notice:
-                payload["notice"] = notice
         self.send_json(payload)
 
     def handle_search_content(self, query: dict[str, list[str]]):
@@ -3137,12 +3102,6 @@ class RequestHandler(BaseHTTPRequestHandler):
 
             try:
                 events = sanitize_session_events(get_trae_session_messages(match), "trae")
-                notice = ""
-                if not any(e.get("role") == "assistant" for e in events):
-                    notice = (
-                        "这条会话只留下了用户指令（摘要或草稿），模型回复、思考与工具调用"
-                        "在 Trae 的加密库中，工具读不到，属于数据源限制。"
-                    )
                 self.send_json({
                     "session_id": match["session_id"],
                     "format": "trae",
@@ -3150,7 +3109,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "started_at": match["started_at"],
                     "events_count": len(events),
                     "events": events,
-                    "notice": notice,
+                    "notice": "",
                 })
                 return
             except Exception as e:
@@ -4542,18 +4501,6 @@ HTML_PAGE = """<!DOCTYPE html>
       color: var(--text-main);
     }
     /* Modal Styles */
-    .data-source-notice {
-      display: flex;
-      gap: 8px;
-      margin: 0 0 14px 0;
-      padding: 10px 14px;
-      border-radius: 10px;
-      font-size: 12.5px;
-      line-height: 1.6;
-      color: #fcd34d;
-      background: rgba(245, 158, 11, 0.1);
-      border: 1px solid rgba(245, 158, 11, 0.28);
-    }
 
     .detail-notice {
       margin: 0 0 14px 0;
@@ -6690,7 +6637,6 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
 
     <!-- Sessions Grid -->
-    <div class="data-source-notice" id="sessionsNotice" style="display: none;"></div>
     <div class="sessions-grid" id="sessionsGrid">
       <div style="grid-column: 1/-1; text-align: center; padding: 60px; color: var(--text-muted);">
         正在加载全平台会话数据...
@@ -7150,15 +7096,6 @@ HTML_PAGE = """<!DOCTYPE html>
       const res = await fetch(`/api/sessions?q=${encodeURIComponent(q)}&format=${fmt}&sort_by=${sort}&order=${order}`);
       const data = await res.json();
       allSessions = data.sessions || [];
-      const noticeEl = document.getElementById('sessionsNotice');
-      if (noticeEl) {
-        if (data.notice) {
-          noticeEl.textContent = data.notice;
-          noticeEl.style.display = '';
-        } else {
-          noticeEl.style.display = 'none';
-        }
-      }
       applySortAndRender();
     }
 
