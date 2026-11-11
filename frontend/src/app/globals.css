@@ -309,3 +309,44 @@ textarea:focus-visible {
   padding: 0 1px;
   outline: 1px solid rgb(var(--warn-rgb) / 0.35);
 }
+
+/* Markdown 表格（GFM）*/
+.md-table-wrap {
+  overflow-x: auto;
+  margin: 0.7em 0;
+  border: 1px solid rgb(var(--line-rgb));
+  border-radius: 8px;
+}
+.md-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.md-body th,
+.md-body td {
+  border-bottom: 1px solid rgb(var(--line-rgb));
+  border-right: 1px solid rgb(var(--line-rgb));
+  padding: 6px 10px;
+  vertical-align: top;
+}
+.md-body th:last-child,
+.md-body td:last-child {
+  border-right: none;
+}
+.md-body tbody tr:last-child td {
+  border-bottom: none;
+}
+.md-body thead th {
+  background: rgb(var(--surface-muted-rgb));
+  color: rgb(var(--ink-rgb));
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+.md-body tbody tr:nth-child(even) {
+  background: rgb(var(--surface-muted-rgb));
+}
+.md-body tbody td code {
+  white-space: nowrap;
+}

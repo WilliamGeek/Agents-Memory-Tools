@@ -29,6 +29,11 @@ function inline(text: string, highlight?: string): string {
     /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
     '<a href="$2" target="_blank" rel="noreferrer noopener">$1</a>'
   );
+  // 裸链接：避免匹配已生成的 href
+  out = out.replace(
+    /(^|[^"'=>])(https?:\/\/[^\s<"]+)/g,
+    (m, pre, url) => `${pre}<a href="${url}" target="_blank" rel="noreferrer noopener">${url}</a>`
+  );
   return out;
 }
 
@@ -76,6 +81,46 @@ export function renderMarkdown(source: string, highlight?: string): string {
     if (!line.trim()) {
       closeList();
       i += 1;
+      continue;
+    }
+
+    // GFM 表格：当前行含 |，下一行是分隔行 |---|
+    if (line.includes('|') && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i + 1])) {
+      closeList();
+      const splitRow = (row: string): string[] => {
+        let t = row.trim();
+        if (t.startsWith('|')) t = t.slice(1);
+        if (t.endsWith('|')) t = t.slice(0, -1);
+        return t.split('|').map((c) => c.trim());
+      };
+      const head = splitRow(line);
+      const aligns = splitRow(lines[i + 1]).map((c) => {
+        const l = c.startsWith(':');
+        const r = c.endsWith(':');
+        if (l && r) return 'center';
+        if (r) return 'right';
+        if (l) return 'left';
+        return '';
+      });
+      const alignAttr = (idx: number) => {
+        const a = aligns[idx];
+        return a ? ` style="text-align:${a}"` : '';
+      };
+      const body: string[][] = [];
+      let j = i + 2;
+      while (j < lines.length && lines[j].includes('|') && lines[j].trim()) {
+        body.push(splitRow(lines[j]));
+        j += 1;
+      }
+      const thead = head.map((c, idx) => `<th${alignAttr(idx)}>${inline(c, highlight)}</th>`).join('');
+      const tbody = body
+        .map(
+          (r) =>
+            `<tr>${r.map((c, idx) => `<td${alignAttr(idx)}>${inline(c, highlight)}</td>`).join('')}</tr>`
+        )
+        .join('');
+      out.push(`<div class="md-table-wrap"><table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table></div>`);
+      i = j;
       continue;
     }
 

@@ -3,10 +3,7 @@
 import React, { useState } from 'react';
 import {
   FolderOpen,
-  GitBranch,
   ArrowRightLeft,
-  Trash2,
-  Eye,
   Check,
   MessageSquare,
   CornerDownRight,
@@ -149,7 +146,7 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
 
       {/* 标题 */}
       <h3
-        className="text-[13.5px] font-medium leading-[1.55] text-ink line-clamp-2 min-h-[42px] mb-1"
+        className="text-[13.5px] font-medium leading-[1.55] text-ink line-clamp-2 mb-1.5"
         title={session.title}
       >
         {stripDatePrefix(session.title)}
@@ -189,27 +186,30 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
         >
           绝对路径
         </button>
+        {hasChildren && (
+          <>
+            <span className="text-line-strong">·</span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setChildrenOpen((v) => !v);
+              }}
+              className="inline-flex items-center gap-0.5 text-accent-ink hover:underline"
+              title={`展开 / 收起下属 ${session.childrenCount} 个子代理会话`}
+            >
+              ↳ {session.childrenCount} 个子会话
+              <ChevronDown
+                size={10}
+                className={`transition-transform ${childrenOpen ? 'rotate-180' : ''}`}
+              />
+            </button>
+          </>
+        )}
       </div>
 
       {/* 子会话：就地展开 */}
       {hasChildren && (
         <div className="mt-2">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setChildrenOpen((v) => !v);
-            }}
-            className="w-full h-6 px-2 rounded border border-line bg-surface-muted text-[11px] text-ink-soft inline-flex items-center gap-1.5 hover:bg-surface-sunken transition-colors"
-            title={`展开 / 收起下属 ${session.childrenCount} 个子代理会话`}
-          >
-            <GitBranch size={10} />
-            {session.childrenCount} 个子会话
-            <ChevronDown
-              size={11}
-              className={`ml-auto transition-transform ${childrenOpen ? 'rotate-180' : ''}`}
-            />
-          </button>
-
           {childrenOpen && (
             <div className="mt-1.5 rounded-md border border-line bg-surface-muted divide-y divide-line/70 max-h-[220px] overflow-y-auto">
               {session.children.map((child) => (
@@ -245,17 +245,16 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
         </div>
       )}
 
-      {/* 操作：查看 / 迁移 / 删除 / 打开文件夹 */}
-      <div className="grid grid-cols-4 gap-1.5 mt-2.5">
+      {/* 操作：查看 / 迁移 / 删除 / 文件夹 */}
+      <div className="flex items-center gap-1.5 mt-2.5">
         <button
           onClick={(e) => {
             e.stopPropagation();
             openSessionDetail(session.catalogId);
           }}
-          className="h-7 rounded-md border border-line bg-surface text-[11.5px] text-ink-soft inline-flex items-center justify-center gap-1 hover:bg-surface-sunken hover:text-ink transition-colors"
+          className="flex-1 h-7 rounded-md border border-line bg-surface text-[11.5px] text-ink-soft hover:bg-surface-sunken hover:text-ink transition-colors"
           title="查看会话消息历史"
         >
-          <Eye size={11} />
           查看
         </button>
         <button
@@ -263,29 +262,27 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
             e.stopPropagation();
             setActiveMigrateSession(session);
           }}
-          className="h-7 rounded-md border border-line bg-surface text-[11.5px] text-ink-soft inline-flex items-center justify-center gap-1 hover:bg-surface-sunken hover:text-ink transition-colors"
+          className="flex-1 h-7 rounded-md bg-accent text-white text-[11.5px] font-medium hover:bg-accent-ink transition-colors"
           title="跨平台迁移该会话"
         >
-          <ArrowRightLeft size={11} />
           迁移
         </button>
         <button
           onClick={remove}
-          className="h-7 rounded-md border border-line bg-surface text-[11.5px] text-ink-muted inline-flex items-center justify-center gap-1 hover:bg-danger-soft hover:text-danger hover:border-danger/30 transition-colors"
+          className="flex-1 h-7 rounded-md border border-line bg-surface text-[11.5px] text-ink-muted hover:bg-danger-soft hover:text-danger hover:border-danger/30 transition-colors"
           title="彻底删除该会话及其子会话文件"
         >
-          <Trash2 size={11} />
           删除
         </button>
         <button
           onClick={openFolder}
-          className="h-7 rounded-md border border-line bg-surface text-[11.5px] text-ink-muted inline-flex items-center justify-center gap-1 hover:bg-surface-sunken hover:text-ink transition-colors"
+          className="w-7 h-7 rounded-md border border-line bg-surface text-ink-muted inline-flex items-center justify-center hover:bg-surface-sunken hover:text-ink transition-colors"
           title="打开所在资源管理器并选中文件"
         >
-          <FolderOpen size={11} />
-          文件夹
+          <FolderOpen size={12} />
         </button>
       </div>
+
     </article>
   );
 }
