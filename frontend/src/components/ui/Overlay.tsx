@@ -38,7 +38,7 @@ function Backdrop({
 }) {
   return (
     <div
-      className={`fixed inset-0 z-50 bg-ink/35 anim-fade ${className || ''}`}
+      className={`fixed inset-0 z-50 bg-scrim/45 backdrop-blur-[2px] anim-fade ${className || ''}`}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}

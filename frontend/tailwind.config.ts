@@ -1,43 +1,48 @@
 import type { Config } from 'tailwindcss';
 
+/** 颜色统一走 CSS 变量（RGB 三元组），从而支持明/暗双主题 */
+const v = (name: string) => `rgb(var(--${name}-rgb) / <alpha-value>)`;
+
 const config: Config = {
   content: ['./src/**/*.{js,ts,jsx,tsx,mdx}', './app/**/*.{js,ts,jsx,tsx,mdx}'],
   theme: {
     extend: {
       colors: {
-        canvas: '#f4f5f7',
+        canvas: v('canvas'),
         surface: {
-          DEFAULT: '#ffffff',
-          muted: '#fafbfc',
-          sunken: '#f1f3f6',
+          DEFAULT: v('surface'),
+          muted: v('surface-muted'),
+          sunken: v('surface-sunken'),
         },
         line: {
-          DEFAULT: '#e4e7ec',
-          strong: '#d3d9e2',
+          DEFAULT: v('line'),
+          strong: v('line-strong'),
         },
         ink: {
-          DEFAULT: '#171c22',
-          soft: '#3d4753',
-          muted: '#6b7683',
-          faint: '#98a2b0',
+          DEFAULT: v('ink'),
+          soft: v('ink-soft'),
+          muted: v('ink-muted'),
+          faint: v('ink-faint'),
         },
         accent: {
-          DEFAULT: '#1f6feb',
-          ink: '#1052c4',
-          soft: '#eef4ff',
+          DEFAULT: v('accent'),
+          ink: v('accent-ink'),
+          soft: v('accent-soft'),
         },
         danger: {
-          DEFAULT: '#cf222e',
-          soft: '#fff1f0',
+          DEFAULT: v('danger'),
+          soft: v('danger-soft'),
         },
         ok: {
-          DEFAULT: '#1a7f37',
-          soft: '#eefaf1',
+          DEFAULT: v('ok'),
+          soft: v('ok-soft'),
         },
         warn: {
-          DEFAULT: '#9a6700',
-          soft: '#fff8e6',
+          DEFAULT: v('warn'),
+          soft: v('warn-soft'),
         },
+        scrim: v('scrim'),
+        // 平台标识色：跨主题保持恒定，用于识别来源
         agent: {
           antigravity: '#6d5efc',
           claude: '#c2710c',
@@ -69,9 +74,9 @@ const config: Config = {
         lg: '10px',
       },
       boxShadow: {
-        card: '0 1px 2px rgba(23, 28, 34, 0.04)',
-        lift: '0 4px 16px rgba(23, 28, 34, 0.08)',
-        panel: '0 18px 48px rgba(23, 28, 34, 0.12)',
+        card: '0 1px 2px rgba(15, 18, 23, 0.05)',
+        lift: '0 6px 20px rgba(15, 18, 23, 0.10)',
+        panel: '0 20px 52px rgba(15, 18, 23, 0.20)',
       },
       maxWidth: {
         shell: '1440px',

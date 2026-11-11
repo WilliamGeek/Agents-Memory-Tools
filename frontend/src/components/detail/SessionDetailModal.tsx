@@ -201,28 +201,69 @@ function CopyButton({ text, label }: { text: string; label: string }) {
   );
 }
 
+/** 长文本分片：默认只渲染前 limit 个字符，避免一次挂上百万字导致界面卡死 */
+function ClampedText({
+  text,
+  limit = 1200,
+  className = '',
+}: {
+  text: string;
+  limit?: number;
+  className?: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const truncated = text.length > limit;
+  const shown = expanded || !truncated ? text : `${text.slice(0, limit)}…`;
+  return (
+    <div>
+      <pre className={className}>{shown}</pre>
+      {truncated && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1 text-[11px] text-accent-ink hover:underline"
+        >
+          {expanded ? '收起' : `展开剩余 ${(text.length - limit).toLocaleString()} 字符`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ThinkBlock({ block, open }: { block: Extract<Block, { type: 'think' }>; open: boolean }) {
+  const [expanded, setExpanded] = useState(open);
   return (
     <details
       open={open}
       className="group rounded-md border border-line bg-surface-muted px-3 py-2"
+      onToggle={(e) => setExpanded((e.currentTarget as HTMLDetailsElement).open)}
     >
       <summary className="cursor-pointer select-none list-none flex items-center gap-1.5 text-[11.5px] text-warn">
         <Sparkles size={11} />
         思考过程
         <span className="text-ink-faint tnum">{formatClock(block.ts)}</span>
+        <span className="text-ink-faint text-[10px]">
+          {block.text.length.toLocaleString()} 字符
+        </span>
         <span className="ml-auto text-ink-faint text-[10px] group-open:rotate-180 transition-transform">
           ▾
         </span>
       </summary>
-      <div className="mt-2 text-[12.5px] leading-relaxed text-ink-muted whitespace-pre-wrap font-mono">
-        {block.text}
-      </div>
+      {expanded && (
+        <div className="mt-2">
+          <ClampedText
+            text={block.text}
+            limit={900}
+            className="text-[12.5px] leading-relaxed text-ink-muted whitespace-pre-wrap break-words font-mono"
+          />
+        </div>
+      )}
     </details>
   );
 }
 
 function ToolBlock({ block, open }: { block: Extract<Block, { type: 'tool' }>; open: boolean }) {
+  // 工具输出默认不渲染内容、也不自动展开：一轮里可能上百次调用，全量展开会直接卡住界面
+  const [showOutput, setShowOutput] = useState(false);
   return (
     <div className="rounded-md border border-line bg-surface-muted overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-line/70">
@@ -238,18 +279,32 @@ function ToolBlock({ block, open }: { block: Extract<Block, { type: 'tool' }>; o
         <span className="ml-auto text-[10px] text-ink-faint tnum">{formatClock(block.ts)}</span>
       </div>
       {block.input && open && (
-        <pre className="px-3 py-2 text-[11.5px] leading-relaxed text-ink-muted font-mono whitespace-pre-wrap break-all border-b border-line/70">
-          {block.input}
-        </pre>
+        <div className="px-3 py-2 border-b border-line/70">
+          <ClampedText
+            text={block.input}
+            limit={600}
+            className="text-[11.5px] leading-relaxed text-ink-muted font-mono whitespace-pre-wrap break-all"
+          />
+        </div>
       )}
       {block.output && (
-        <details open={open} className="group">
+        <details
+          open={showOutput}
+          className="group"
+          onToggle={(e) => setShowOutput((e.currentTarget as HTMLDetailsElement).open)}
+        >
           <summary className="px-3 py-1.5 text-[11px] text-ink-faint cursor-pointer select-none list-none hover:text-ink-soft">
-            输出 {open ? '' : `(${block.output.length.toLocaleString()} 字符，点击展开)`}
+            输出（{block.output.length.toLocaleString()} 字符{showOutput ? '' : '，点击展开'}）
           </summary>
-          <pre className="px-3 pb-2.5 text-[11.5px] leading-relaxed text-ink-muted font-mono whitespace-pre-wrap break-all">
-            {block.output}
-          </pre>
+          {showOutput && (
+            <div className="px-3 pb-2.5">
+              <ClampedText
+                text={block.output}
+                limit={2000}
+                className="text-[11.5px] leading-relaxed text-ink-muted font-mono whitespace-pre-wrap break-all"
+              />
+            </div>
+          )}
         </details>
       )}
     </div>
@@ -386,9 +441,10 @@ export function SessionDetailModal() {
         <button
           key={m}
           onClick={() => setDetailViewMode(m)}
+          aria-pressed={detailViewMode === m}
           className={`px-2 py-1 rounded transition-colors ${
             detailViewMode === m
-              ? 'bg-surface text-ink font-medium shadow-card'
+              ? 'bg-surface text-accent-ink font-semibold shadow-card ring-1 ring-accent/30'
               : 'text-ink-muted hover:text-ink'
           }`}
         >
@@ -515,9 +571,14 @@ export function SessionDetailModal() {
                       </span>
                     )}
                   </div>
-                  <p className="mt-1 text-[13.5px] leading-relaxed text-ink whitespace-pre-wrap break-words">
-                    {turn.user?.text || '（本轮无用户指令）'}
-                  </p>
+                  {turn.user?.text ? (
+                    <div
+                      className="mt-1 md-body md-body-user"
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(turn.user.text) }}
+                    />
+                  ) : (
+                    <p className="mt-1 text-[13.5px] text-ink-soft">（本轮无用户指令）</p>
+                  )}
                 </div>
                 {turn.user?.text && <CopyButton text={turn.user.text} label="复制用户指令" />}
               </div>

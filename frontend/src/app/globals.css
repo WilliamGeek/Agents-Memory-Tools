@@ -3,32 +3,69 @@
 @tailwind utilities;
 
 /* ============================================================
-   设计令牌：浅色纸张 + 单一蓝色强调，层级靠版式而非压字号
+   设计令牌：所有颜色以 RGB 三元组暴露给 Tailwind，便于支持明/暗双主题
    ============================================================ */
-:root {
-  --canvas: #f4f5f7;
-  --surface: #ffffff;
-  --surface-2: #fafbfc;
-  --surface-3: #f1f3f6;
-  --border: #e4e7ec;
-  --border-strong: #d3d9e2;
-  --ink: #171c22;
-  --ink-2: #3d4753;
-  --muted: #6b7683;
-  --faint: #98a2b0;
-  --accent: #1f6feb;
-  --accent-ink: #1052c4;
-  --accent-soft: #eef4ff;
-  --danger: #cf222e;
-  --danger-soft: #fff1f0;
-  --ok: #1a7f37;
-  --ok-soft: #eefaf1;
-  --warn: #9a6700;
-  --warn-soft: #fff8e6;
+:root,
+[data-theme='light'] {
+  --canvas-rgb: 244 245 247;
+  --surface-rgb: 255 255 255;
+  --surface-muted-rgb: 250 251 252;
+  --surface-sunken-rgb: 241 243 246;
+
+  --line-rgb: 228 231 236;
+  --line-strong-rgb: 211 217 226;
+
+  --ink-rgb: 23 28 34;
+  --ink-soft-rgb: 61 71 83;
+  --ink-muted-rgb: 107 118 131;
+  --ink-faint-rgb: 152 162 176;
+
+  --accent-rgb: 31 111 235;
+  --accent-ink-rgb: 16 82 196;
+  --accent-soft-rgb: 238 244 255;
+
+  --danger-rgb: 207 34 46;
+  --danger-soft-rgb: 255 241 240;
+  --ok-rgb: 26 127 55;
+  --ok-soft-rgb: 238 250 241;
+  --warn-rgb: 154 103 0;
+  --warn-soft-rgb: 255 248 230;
+
+  --scrim-rgb: 23 28 34;
+  --selection-rgb: 215 229 255;
+}
+
+[data-theme='dark'] {
+  --canvas-rgb: 20 22 26;
+  --surface-rgb: 29 32 38;
+  --surface-muted-rgb: 35 38 45;
+  --surface-sunken-rgb: 43 47 55;
+
+  --line-rgb: 52 57 66;
+  --line-strong-rgb: 72 78 89;
+
+  --ink-rgb: 233 236 241;
+  --ink-soft-rgb: 189 196 207;
+  --ink-muted-rgb: 148 156 168;
+  --ink-faint-rgb: 115 123 135;
+
+  --accent-rgb: 96 152 255;
+  --accent-ink-rgb: 150 189 255;
+  --accent-soft-rgb: 32 44 66;
+
+  --danger-rgb: 240 118 126;
+  --danger-soft-rgb: 58 30 34;
+  --ok-rgb: 104 201 140;
+  --ok-soft-rgb: 26 48 38;
+  --warn-rgb: 226 179 92;
+  --warn-soft-rgb: 56 45 24;
+
+  --scrim-rgb: 0 0 0;
+  --selection-rgb: 40 62 100;
 }
 
 * {
-  border-color: var(--border);
+  border-color: rgb(var(--line-rgb));
 }
 
 html,
@@ -37,8 +74,8 @@ body {
 }
 
 body {
-  background-color: var(--canvas);
-  color: var(--ink);
+  background-color: rgb(var(--canvas-rgb));
+  color: rgb(var(--ink-rgb));
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -46,8 +83,8 @@ body {
 }
 
 ::selection {
-  background: #d7e5ff;
-  color: var(--accent-ink);
+  background: rgb(var(--selection-rgb));
+  color: rgb(var(--ink-rgb));
 }
 
 /* 细滚动条 */
@@ -59,13 +96,13 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #cdd4de;
+  background: rgb(var(--line-strong-rgb));
   border-radius: 6px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #b6bfcb;
+  background: rgb(var(--ink-faint-rgb));
   background-clip: content-box;
 }
 
@@ -84,19 +121,19 @@ a:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid rgb(var(--accent-rgb));
   outline-offset: 1px;
   border-radius: 6px;
 }
 
-/* 数字等宽，便于纵向对齐 */
+/* 数字等宽 */
 .tnum {
   font-variant-numeric: tabular-nums;
   font-family: ui-monospace, SFMono-Regular, 'JetBrains Mono', Consolas, monospace;
 }
 
 /* ============================================================
-   动效：短、轻、不抢注意力
+   动效
    ============================================================ */
 @keyframes fadeIn {
   from {
@@ -137,10 +174,10 @@ textarea:focus-visible {
 }
 
 /* ============================================================
-   会话正文的 Markdown 排版
+   Markdown 排版
    ============================================================ */
 .md-body {
-  color: var(--ink-2);
+  color: rgb(var(--ink-soft-rgb));
   font-size: 13.5px;
   line-height: 1.75;
   word-break: break-word;
@@ -152,7 +189,7 @@ textarea:focus-visible {
 .md-body h4,
 .md-body h5,
 .md-body h6 {
-  color: var(--ink);
+  color: rgb(var(--ink-rgb));
   font-weight: 600;
   line-height: 1.4;
   margin-top: 1.2em;
@@ -168,26 +205,26 @@ textarea:focus-visible {
   font-size: 13px;
 }
 .md-body strong {
-  color: var(--ink);
+  color: rgb(var(--ink-rgb));
   font-weight: 600;
 }
 .md-body a {
-  color: var(--accent);
+  color: rgb(var(--accent-rgb));
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 .md-body code {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 0.92em;
-  background: var(--surface-3);
-  border: 1px solid var(--border);
+  background: rgb(var(--surface-sunken-rgb));
+  border: 1px solid rgb(var(--line-rgb));
   border-radius: 4px;
   padding: 0.1em 0.35em;
-  color: #b4315c;
+  color: rgb(var(--accent-ink-rgb));
 }
 .md-body pre {
-  background: #fbfcfd;
-  border: 1px solid var(--border);
+  background: rgb(var(--surface-muted-rgb));
+  border: 1px solid rgb(var(--line-rgb));
   border-radius: 8px;
   padding: 10px 12px;
   overflow-x: auto;
@@ -196,7 +233,7 @@ textarea:focus-visible {
   background: none;
   border: none;
   padding: 0;
-  color: var(--ink-2);
+  color: rgb(var(--ink-soft-rgb));
   font-size: 12px;
   line-height: 1.6;
 }
@@ -214,14 +251,43 @@ textarea:focus-visible {
   margin-top: 0.25em;
 }
 .md-body blockquote {
-  border-left: 3px solid var(--border-strong);
+  border-left: 3px solid rgb(var(--line-strong-rgb));
   padding-left: 12px;
-  color: var(--muted);
+  color: rgb(var(--ink-muted-rgb));
 }
 .md-body hr {
   border: none;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid rgb(var(--line-rgb));
 }
 .md-body del {
-  color: var(--faint);
+  color: rgb(var(--ink-faint-rgb));
+}
+
+/* 用户指令块 */
+.md-body-user {
+  color: rgb(var(--ink-rgb));
+}
+.md-body-user > *:first-child {
+  margin-top: 0;
+}
+.md-body-user h3,
+.md-body-user h4 {
+  font-size: 14px;
+}
+
+/* ============================================================
+   平台色标识：卡片左侧色条，提供视觉节奏
+   ============================================================ */
+.rail {
+  overflow: hidden;
+}
+.rail::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--rail-color, transparent);
+  opacity: 0.9;
 }

@@ -13,7 +13,8 @@ import { MigrateModal } from '../components/modals/MigrateModal';
 import { BatchManagementDrawer } from '../components/batch/BatchManagementDrawer';
 import { api } from '../api/client';
 import { useStore } from '../store/useStore';
-import { Loader2 } from 'lucide-react';
+import { Loader2, MessagesSquare, HardDrive, Coins, Activity } from 'lucide-react';
+import { formatBytes, formatTokens, formatCount } from '../lib/format';
 
 export default function WorkspacePage() {
   const { activeFilter, searchQuery, sortField, sortOrder, isScanning } = useStore();
@@ -47,6 +48,18 @@ export default function WorkspacePage() {
     );
   }, [sessions, searchQuery]);
 
+  const kpi = useMemo(() => {
+    let weekActive = 0;
+    const weekAgo = Date.now() - 7 * 86400000;
+    const formats = new Set<string>();
+    for (const s of sessions) {
+      formats.add(s.format);
+      const last = s.mtime ? s.mtime * 1000 : 0;
+      if (last >= weekAgo) weekActive += 1;
+    }
+    return { weekActive, formats: formats.size };
+  }, [sessions]);
+
   const stats = useMemo(() => {
     let bytes = 0;
     let tokens = 0;
@@ -76,6 +89,37 @@ export default function WorkspacePage() {
           </div>
         )}
 
+        <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <KpiCard
+            icon={<MessagesSquare size={14} />}
+            label="收录会话"
+            value={formatCount(status?.totalSessions || sessions.length)}
+            sub={`覆盖 ${kpi.formats} 个平台`}
+            color="#1f6feb"
+          />
+          <KpiCard
+            icon={<HardDrive size={14} />}
+            label="占用存储"
+            value={formatBytes(stats.bytes)}
+            sub={`平均 ${formatBytes(filtered.length ? stats.bytes / filtered.length : 0)} / 会话`}
+            color="#0f9d58"
+          />
+          <KpiCard
+            icon={<Coins size={14} />}
+            label="Token 总量"
+            value={formatTokens(stats.tokens)}
+            sub="按全部命中会话累计"
+            color="#c2710c"
+          />
+          <KpiCard
+            icon={<Activity size={14} />}
+            label="近 7 天活跃"
+            value={formatCount(kpi.weekActive)}
+            sub="按最后修改时间统计"
+            color="#6d5efc"
+          />
+        </section>
+
         <div className={isScanning ? 'pointer-events-none opacity-60 transition-opacity' : 'transition-opacity'}>
           <SessionGrid
             sessions={filtered}
@@ -92,6 +136,31 @@ export default function WorkspacePage() {
       <RootsModal onRootsChanged={refreshAll} />
       <MigrateModal />
       <BatchManagementDrawer sessions={filtered} onBatchActionFinished={refreshAll} />
+    </div>
+  );
+}
+
+function KpiCard({
+  icon,
+  label,
+  value,
+  sub,
+  color,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub: string;
+  color: string;
+}) {
+  return (
+    <div className="bg-surface border border-line rounded-card px-3.5 py-3 shadow-card">
+      <div className="flex items-center gap-1.5 text-[11px] text-ink-muted">
+        <span style={{ color }}>{icon}</span>
+        {label}
+      </div>
+      <div className="mt-1.5 text-[20px] font-semibold text-ink tnum leading-none">{value}</div>
+      <div className="mt-1 text-[10.5px] text-ink-faint">{sub}</div>
     </div>
   );
 }

@@ -67,7 +67,8 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
   return (
     <article
       onClick={() => openSessionDetail(session.catalogId)}
-      className={`group relative flex flex-col bg-surface border rounded-card p-3.5 cursor-pointer transition-all duration-150 ${
+      style={{ ['--rail-color' as any]: meta.color }}
+      className={`rail group relative flex flex-col bg-surface border rounded-card p-3.5 cursor-pointer transition-all duration-150 ${
         selected
           ? 'border-accent/50 ring-2 ring-accent/15 shadow-card'
           : 'border-line hover:border-line-strong hover:shadow-lift'

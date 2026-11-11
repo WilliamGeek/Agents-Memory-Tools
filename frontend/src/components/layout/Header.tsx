@@ -4,6 +4,7 @@ import React from 'react';
 import { Search, FolderCog, Layers, RefreshCw, BrainCircuit } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 import { api } from '../../api/client';
+import { ThemeToggle } from './ThemeToggle';
 import { toast } from 'sonner';
 
 const ghostBtn =
@@ -88,6 +89,8 @@ export function Header({ onRefresh }: { onRefresh?: () => void }) {
               </span>
             )}
           </button>
+
+          <ThemeToggle />
 
           <button
             onClick={handleRefresh}
