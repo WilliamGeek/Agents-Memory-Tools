@@ -31,6 +31,13 @@
   --warn-rgb: 154 103 0;
   --warn-soft-rgb: 255 248 230;
 
+  --user-rgb: 79 70 229;
+  --user-soft-rgb: 238 240 255;
+  --think-rgb: 124 58 237;
+  --think-soft-rgb: 248 244 255;
+  --act-rgb: 5 150 105;
+  --act-soft-rgb: 236 253 245;
+
   --scrim-rgb: 23 28 34;
   --selection-rgb: 215 229 255;
 }
@@ -59,6 +66,13 @@
   --ok-soft-rgb: 26 48 38;
   --warn-rgb: 226 179 92;
   --warn-soft-rgb: 56 45 24;
+
+  --user-rgb: 150 162 255;
+  --user-soft-rgb: 33 35 63;
+  --think-rgb: 185 156 255;
+  --think-soft-rgb: 41 33 58;
+  --act-rgb: 84 224 173;
+  --act-soft-rgb: 21 46 39;
 
   --scrim-rgb: 0 0 0;
   --selection-rgb: 40 62 100;
@@ -349,4 +363,37 @@ textarea:focus-visible {
 }
 .md-body tbody td code {
   white-space: nowrap;
+}
+
+/* ============================================================
+   详情四类区块：指令（靛）/ 思考（紫）/ 行动（绿）/ 回复（中性）
+   对应旧版 .bubble.user / .thinking / .tool / .assistant 的配色语义
+   ============================================================ */
+.block-user {
+  background: rgb(var(--user-soft-rgb));
+  border-color: rgb(var(--user-rgb) / 0.28);
+}
+.block-think {
+  background: rgb(var(--think-soft-rgb));
+  border-color: rgb(var(--think-rgb) / 0.26);
+}
+.block-act {
+  background: rgb(var(--act-soft-rgb));
+  border-color: rgb(var(--act-rgb) / 0.26);
+}
+.block-reply {
+  background: rgb(var(--surface-rgb));
+  border-color: rgb(var(--line-rgb));
+}
+.tag-user {
+  color: rgb(var(--user-rgb));
+  background: rgb(var(--user-rgb) / 0.12);
+}
+.tag-think {
+  color: rgb(var(--think-rgb));
+  background: rgb(var(--think-rgb) / 0.12);
+}
+.tag-act {
+  color: rgb(var(--act-rgb));
+  background: rgb(var(--act-rgb) / 0.12);
 }

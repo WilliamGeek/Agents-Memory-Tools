@@ -42,6 +42,9 @@ const config: Config = {
           soft: v('warn-soft'),
         },
         scrim: v('scrim'),
+        user: { DEFAULT: v('user'), soft: v('user-soft') },
+        think: { DEFAULT: v('think'), soft: v('think-soft') },
+        act: { DEFAULT: v('act'), soft: v('act-soft') },
         // 平台标识色：跨主题保持恒定，用于识别来源
         agent: {
           antigravity: '#6d5efc',

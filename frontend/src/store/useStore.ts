@@ -24,9 +24,6 @@ interface AppState {
   openSessionDetail: (catalogId: string, turnIndex?: number) => void;
   closeSessionDetail: () => void;
 
-  detailViewMode: 'compact' | 'summary' | 'full';
-  setDetailViewMode: (mode: 'compact' | 'summary' | 'full') => void;
-
   isGlobalSearchOpen: boolean;
   setIsGlobalSearchOpen: (open: boolean) => void;
 
@@ -81,9 +78,6 @@ export const useStore = create<AppState>((set) => ({
     set({ activeDetailCatalogId: catalogId, activeDetailTurnIndex: turnIndex ?? null }),
   closeSessionDetail: () =>
     set({ activeDetailCatalogId: null, activeDetailTurnIndex: null }),
-
-  detailViewMode: 'summary',
-  setDetailViewMode: (mode) => set({ detailViewMode: mode }),
 
   isGlobalSearchOpen: false,
   setIsGlobalSearchOpen: (open) => set({ isGlobalSearchOpen: open }),
