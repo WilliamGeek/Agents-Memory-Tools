@@ -130,6 +130,12 @@ export const api = {
       { method: 'POST', body: JSON.stringify(sessionKey(s)) }
     ),
 
+  deleteByCatalogId: (catalogId: string) =>
+    fetchJson<{ success: boolean; freed_bytes: number }>('/api/session/delete', {
+      method: 'POST',
+      body: JSON.stringify({ catalog_id: catalogId }),
+    }),
+
   batchDeleteSessions: (sessions: SessionItem[]) =>
     fetchJson<{
       success: boolean;

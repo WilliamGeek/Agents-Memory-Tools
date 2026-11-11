@@ -59,6 +59,8 @@ export interface SessionItem {
   lineage: string;
   lineageSize: number;
   lineageHeadTitle: string;
+  lineageHeadId: string;
+  lineageHeadSteps: number;
   branchLabel: string;
   isLineageBranch: boolean;
   sideQuestion: string;

@@ -112,6 +112,11 @@ export function BatchManagementDrawer({
 
   const doMigrate = async () => {
     if (!selectedCount) return;
+    const ok = window.confirm(
+      `确认将选中的 ${selectedCount} 个会话迁移至 ${platformMeta(target).label}？\n\n` +
+        `产物写入目标平台的原生存储目录，可直接被该平台读取；原会话不做改动。`
+    );
+    if (!ok) return;
     setBusy('migrate');
     try {
       const res = await api.batchMigrateSessions(selectedCatalogIds, target);

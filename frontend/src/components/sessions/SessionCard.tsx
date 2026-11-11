@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
   FolderOpen,
   GitBranch,
@@ -10,6 +10,9 @@ import {
   Check,
   MessageSquare,
   CornerDownRight,
+  Copy,
+  CopyMinus,
+  ChevronDown,
 } from 'lucide-react';
 import { SessionItem } from '../../types/session';
 import { useStore } from '../../store/useStore';
@@ -21,15 +24,28 @@ import { platformMeta } from '../../lib/platform';
 export function SessionCard({ session, onChanged }: { session: SessionItem; onChanged?: () => void }) {
   const {
     openSessionDetail,
-    setActiveSubagentParent,
     setActiveMigrateSession,
     selectedCatalogIds,
     toggleSelectSession,
+    openSessionDetail: openDetail,
   } = useStore();
+  const [childrenOpen, setChildrenOpen] = useState(false);
 
   const meta = platformMeta(session.format);
   const selected = selectedCatalogIds.includes(session.catalogId);
   const isEmpty = session.records === 0;
+  const hasChildren = session.childrenCount > 0;
+  const isForkGroup = session.lineageSize > 1 && !session.isLineageBranch;
+
+  const copy = async (text: string, label: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(`已复制${label}`);
+    } catch {
+      toast.error('复制失败，请手动选择文本');
+    }
+  };
 
   const openFolder = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -49,15 +65,13 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
     e.stopPropagation();
     const ok = window.confirm(
       `确定彻底删除该会话？\n\n${session.title}\n${
-        session.childrenCount > 0 ? `\n将同时删除 ${session.childrenCount} 个子代理会话。\n` : ''
+        hasChildren ? `\n将同时删除 ${session.childrenCount} 个子代理会话。\n` : ''
       }`
     );
     if (!ok) return;
     try {
       const res = await api.deleteSession(session);
-      toast.success(
-        `已删除，释放 ${(res.freed_bytes / 1024).toFixed(1)} KB`
-      );
+      toast.success(`已删除，释放 ${(res.freed_bytes / 1024).toFixed(1)} KB`);
       onChanged?.();
     } catch (err: any) {
       toast.error(`删除失败：${err.message}`);
@@ -74,7 +88,7 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
           : 'border-line hover:border-line-strong hover:shadow-lift'
       }`}
     >
-      {/* 顶部：平台 / 时间 / 选择 */}
+      {/* 顶部：平台 / 谱系徽标 / 时间 */}
       <div className="flex items-center justify-between gap-2 mb-2">
         <div className="flex items-center gap-1.5 min-w-0">
           <button
@@ -101,85 +115,145 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
               {meta.label}
             </span>
           </span>
+
+          {/* 分叉徽标：主副本显示「⧉ N 个分叉」，副本显示「↳ 同源分支 / 旁问」 */}
+          {session.isLineageBranch ? (
+            <span
+              className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border border-warn/30 bg-warn-soft text-[9.5px] text-warn"
+              title={
+                session.sideQuestion
+                  ? `/btw 旁问：${session.sideQuestion}`
+                  : `与「${session.lineageHeadTitle || '主副本'}」是同一条对话的分叉快照（主副本 ${session.lineageHeadSteps} 步）`
+              }
+            >
+              <CornerDownRight size={8} />
+              {session.sideQuestion ? '旁问' : session.branchLabel || '同源分支'}
+            </span>
+          ) : isForkGroup ? (
+            <span
+              className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border border-line bg-surface-sunken text-[9.5px] text-ink-muted"
+              title={`这条对话另有 ${session.lineageSize - 1} 个分叉副本占用磁盘`}
+            >
+              <CopyMinus size={8} />
+              {session.lineageSize} 个分叉
+            </span>
+          ) : null}
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
           <time className="tnum text-[10.5px] text-ink-faint">
             {formatDateTime(session.startedAt)}
           </time>
-          <button
-            onClick={openFolder}
-            className="p-1 rounded text-ink-faint hover:text-ink hover:bg-surface-sunken transition-colors"
-            title={session.filePath || '无源文件路径'}
-          >
-            <FolderOpen size={12} />
-          </button>
         </div>
       </div>
 
       {/* 标题 */}
       <h3
-        className="text-[13.5px] font-medium leading-[1.55] text-ink line-clamp-2 min-h-[42px] mb-2"
+        className="text-[13.5px] font-medium leading-[1.55] text-ink line-clamp-2 min-h-[42px] mb-1"
         title={session.title}
       >
         {stripDatePrefix(session.title)}
       </h3>
 
-      {/* 徽标行 */}
-      {(session.lineageSize > 1 || session.childrenCount > 0 || isEmpty) && (
-        <div className="flex flex-wrap items-center gap-1.5 mb-2.5">
-          {session.lineageSize > 1 && (
-            <span
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-warn/30 bg-warn-soft text-[10px] text-warn"
-              title={
-                session.sideQuestion
-                  ? `/btw 旁问：${session.sideQuestion}`
-                  : `与「${session.lineageHeadTitle || '同源会话'}」为同一条对话的分叉副本`
-              }
-            >
-              <CornerDownRight size={9} />
-              {session.sideQuestion ? '旁问' : session.branchLabel || '同源分支'}
-            </span>
-          )}
-          {session.childrenCount > 0 && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setActiveSubagentParent(session);
-              }}
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-accent/30 bg-accent-soft text-[10px] text-accent-ink hover:border-accent/60 transition-colors"
-              title="查看该会话派生的子代理会话"
-            >
-              <GitBranch size={9} />
-              {session.childrenCount} 子会话
-            </button>
-          )}
-          {isEmpty && (
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-line bg-surface-sunken text-[10px] text-ink-faint">
-              <MessageSquare size={9} />
-              空会话
-            </span>
-          )}
-        </div>
+      {/* 旁问正文摘录 */}
+      {session.sideQuestion && (
+        <p
+          className="mb-2 text-[11.5px] text-warn line-clamp-1"
+          title={`/btw 旁问：${session.sideQuestion}`}
+        >
+          旁问：{session.sideQuestion}
+        </p>
       )}
 
-      {/* 指标 */}
-      <div className="mt-auto pt-2.5 border-t border-line flex items-center gap-2 text-[11px] text-ink-muted tnum">
+      {/* 指标行：步数 · 大小 · Token · UUID · 绝对路径 */}
+      <div className="mt-auto pt-2 border-t border-line flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-ink-muted tnum">
         <span>{session.records} 步</span>
         <span className="text-line-strong">·</span>
         <span>{formatBytes(session.bytes)}</span>
         <span className="text-line-strong">·</span>
         <span>{formatTokens(session.tokens)} tokens</span>
+        <span className="text-line-strong">·</span>
+        <button
+          onClick={(e) => copy(session.sessionId, ' UUID', e)}
+          className="inline-flex items-center gap-0.5 hover:text-ink transition-colors"
+          title={`点击复制 UUID：${session.sessionId}`}
+        >
+          <Copy size={9} />
+          {session.sessionId.slice(0, 8)}…
+        </button>
+        <span className="text-line-strong">·</span>
+        <button
+          onClick={(e) => copy(session.filePath, '绝对路径', e)}
+          className="hover:text-ink underline decoration-dotted underline-offset-2 transition-colors"
+          title={`点击复制绝对路径：${session.filePath}`}
+        >
+          绝对路径
+        </button>
       </div>
 
-      {/* 操作 */}
-      <div className="grid grid-cols-3 gap-1.5 mt-2.5">
+      {/* 子会话：就地展开 */}
+      {hasChildren && (
+        <div className="mt-2">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setChildrenOpen((v) => !v);
+            }}
+            className="w-full h-6 px-2 rounded border border-line bg-surface-muted text-[11px] text-ink-soft inline-flex items-center gap-1.5 hover:bg-surface-sunken transition-colors"
+            title={`展开 / 收起下属 ${session.childrenCount} 个子代理会话`}
+          >
+            <GitBranch size={10} />
+            {session.childrenCount} 个子会话
+            <ChevronDown
+              size={11}
+              className={`ml-auto transition-transform ${childrenOpen ? 'rotate-180' : ''}`}
+            />
+          </button>
+
+          {childrenOpen && (
+            <div className="mt-1.5 rounded-md border border-line bg-surface-muted divide-y divide-line/70 max-h-[220px] overflow-y-auto">
+              {session.children.map((child) => (
+                <div
+                  key={child.catalogId}
+                  className="px-2 py-1.5 hover:bg-surface-sunken transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (child.catalogId) openDetail(child.catalogId);
+                  }}
+                >
+                  <p className="text-[11.5px] text-ink-soft line-clamp-1" title={child.title}>
+                    {stripDatePrefix(child.title)}
+                  </p>
+                  <p className="text-[10px] text-ink-faint tnum mt-0.5">
+                    {child.records} 步 · {formatBytes(child.bytes)}
+                    {child.agentName ? ` · ${child.agentName}` : ''}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 空会话标记 */}
+      {isEmpty && (
+        <div className="mt-2">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-line bg-surface-sunken text-[10px] text-ink-faint">
+            <MessageSquare size={9} />
+            空会话
+          </span>
+        </div>
+      )}
+
+      {/* 操作：查看 / 迁移 / 删除 / 打开文件夹 */}
+      <div className="grid grid-cols-4 gap-1.5 mt-2.5">
         <button
           onClick={(e) => {
             e.stopPropagation();
             openSessionDetail(session.catalogId);
           }}
           className="h-7 rounded-md border border-line bg-surface text-[11.5px] text-ink-soft inline-flex items-center justify-center gap-1 hover:bg-surface-sunken hover:text-ink transition-colors"
+          title="查看会话消息历史"
         >
           <Eye size={11} />
           查看
@@ -190,6 +264,7 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
             setActiveMigrateSession(session);
           }}
           className="h-7 rounded-md border border-line bg-surface text-[11.5px] text-ink-soft inline-flex items-center justify-center gap-1 hover:bg-surface-sunken hover:text-ink transition-colors"
+          title="跨平台迁移该会话"
         >
           <ArrowRightLeft size={11} />
           迁移
@@ -197,9 +272,18 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
         <button
           onClick={remove}
           className="h-7 rounded-md border border-line bg-surface text-[11.5px] text-ink-muted inline-flex items-center justify-center gap-1 hover:bg-danger-soft hover:text-danger hover:border-danger/30 transition-colors"
+          title="彻底删除该会话及其子会话文件"
         >
           <Trash2 size={11} />
           删除
+        </button>
+        <button
+          onClick={openFolder}
+          className="h-7 rounded-md border border-line bg-surface text-[11.5px] text-ink-muted inline-flex items-center justify-center gap-1 hover:bg-surface-sunken hover:text-ink transition-colors"
+          title="打开所在资源管理器并选中文件"
+        >
+          <FolderOpen size={11} />
+          文件夹
         </button>
       </div>
     </article>

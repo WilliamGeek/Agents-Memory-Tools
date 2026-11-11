@@ -10,8 +10,17 @@ const escapeHtml = (s: string): string =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
-function inline(text: string): string {
-  let out = escapeHtml(text);
+/** 把已转义文本中的命中词包成 <mark>，用于详情内搜索高亮 */
+function markHits(escapedHtml: string, query?: string): string {
+  if (!query) return escapedHtml;
+  const needle = escapeHtml(query);
+  if (!needle) return escapedHtml;
+  const re = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+  return escapedHtml.replace(re, (m) => `<mark class="chat-hit">${m}</mark>`);
+}
+
+function inline(text: string, highlight?: string): string {
+  let out = markHits(escapeHtml(text), highlight);
   out = out.replace(/`([^`\n]+)`/g, '<code>$1</code>');
   out = out.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
   out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
@@ -23,7 +32,7 @@ function inline(text: string): string {
   return out;
 }
 
-export function renderMarkdown(source: string): string {
+export function renderMarkdown(source: string, highlight?: string): string {
   if (!source) return '';
   const lines = source.replace(/\r\n/g, '\n').split('\n');
   const out: string[] = [];
@@ -74,7 +83,7 @@ export function renderMarkdown(source: string): string {
     if (heading) {
       closeList();
       const level = Math.min(heading[1].length + 2, 6);
-      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      out.push(`<h${level}>${inline(heading[2], highlight)}</h${level}>`);
       i += 1;
       continue;
     }
@@ -89,7 +98,7 @@ export function renderMarkdown(source: string): string {
     const quote = line.match(/^\s*>\s?(.*)$/);
     if (quote) {
       closeList();
-      out.push(`<blockquote>${inline(quote[1])}</blockquote>`);
+      out.push(`<blockquote>${inline(quote[1], highlight)}</blockquote>`);
       i += 1;
       continue;
     }
@@ -103,7 +112,7 @@ export function renderMarkdown(source: string): string {
         out.push(want === 'ul' ? '<ul>' : '<ol>');
         listType = want;
       }
-      out.push(`<li>${inline((ul || ol)![1])}</li>`);
+      out.push(`<li>${inline((ul || ol)![1], highlight)}</li>`);
       i += 1;
       continue;
     }
@@ -123,7 +132,7 @@ export function renderMarkdown(source: string): string {
       para.push(lines[i]);
       i += 1;
     }
-    out.push(`<p>${inline(para.join('\n')).replace(/\n/g, '<br/>')}</p>`);
+    out.push(`<p>${inline(para.join('\n'), highlight).replace(/\n/g, '<br/>')}</p>`);
   }
 
   closeList();

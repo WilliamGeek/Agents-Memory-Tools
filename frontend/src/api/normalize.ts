@@ -87,6 +87,8 @@ export function normalizeSession(raw: Raw): SessionItem {
     lineage: str(raw.lineage),
     lineageSize: num(raw.lineage_size),
     lineageHeadTitle: str(raw.lineage_head_title),
+    lineageHeadId: str(raw.lineage_head_id),
+    lineageHeadSteps: num(raw.lineage_head_steps),
     branchLabel: str(raw.branch_label),
     isLineageBranch: Boolean(raw.is_lineage_branch),
     sideQuestion: str(raw.side_question),

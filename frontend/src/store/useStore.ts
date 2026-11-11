@@ -45,6 +45,14 @@ interface AppState {
   /** 全量扫描进行中：后端会持有写锁，期间其他请求会变慢，UI 需要提示并收敛交互 */
   isScanning: boolean;
   setIsScanning: (v: boolean) => void;
+
+  /** 折叠 Antigravity 同一对话的分叉快照，只保留主副本 */
+  foldLineage: boolean;
+  toggleFoldLineage: () => void;
+
+  /** 任意组件改动数据后自增，列表据此重新拉取 */
+  dataVersion: number;
+  bumpDataVersion: () => void;
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -94,4 +102,10 @@ export const useStore = create<AppState>((set) => ({
 
   isScanning: false,
   setIsScanning: (v) => set({ isScanning: v }),
+
+  foldLineage: false,
+  toggleFoldLineage: () => set((s) => ({ foldLineage: !s.foldLineage })),
+
+  dataVersion: 0,
+  bumpDataVersion: () => set((s) => ({ dataVersion: s.dataVersion + 1 })),
 }));

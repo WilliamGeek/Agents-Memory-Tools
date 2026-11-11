@@ -11,6 +11,11 @@ import {
   MessageSquare,
   AlertTriangle,
   Loader2,
+  Search,
+  X,
+  Trash2,
+  ArrowRightLeft,
+  ChevronsUpDown,
 } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 import { api } from '../../api/client';
@@ -70,6 +75,13 @@ function pickToolInput(payload: any): string {
   } catch {
     return '';
   }
+}
+
+function blockTexts(b: Block): string[] {
+  if (b.type === 'think') return [b.text];
+  if (b.type === 'tool') return [b.name, b.input, b.output];
+  if (b.type === 'text' || b.type === 'opaque') return [b.text];
+  return b.items.flatMap((it) => (it.type === 'think' ? [it.text] : [it.name, it.input, it.output]));
 }
 
 function buildTurns(events: SessionEvent[], mode: ViewMode): Turn[] {
@@ -311,8 +323,11 @@ function ToolBlock({ block, open }: { block: Extract<Block, { type: 'tool' }>; o
   );
 }
 
-function TraceGroup({ items }: { items: TraceItem[] }) {
-  const [expanded, setExpanded] = useState(false);
+function TraceGroup({ items, defaultOpen = false }: { items: TraceItem[]; defaultOpen?: boolean }) {
+  const [expanded, setExpanded] = useState(defaultOpen);
+  useEffect(() => {
+    setExpanded(defaultOpen);
+  }, [defaultOpen]);
   const tools = items.filter((i): i is ToolData => i.type === 'tool');
   const thinks = items.filter((i) => i.type === 'think');
   const counts = new Map<string, number>();
@@ -325,6 +340,7 @@ function TraceGroup({ items }: { items: TraceItem[] }) {
 
   return (
     <details
+      open={defaultOpen}
       className="group rounded-md border border-line bg-surface-muted"
       onToggle={(e) => setExpanded((e.currentTarget as HTMLDetailsElement).open)}
     >
@@ -371,6 +387,8 @@ export function SessionDetailModal() {
     closeSessionDetail,
     detailViewMode,
     setDetailViewMode,
+    setActiveMigrateSession,
+    bumpDataVersion,
   } = useStore();
 
   const [detail, setDetail] = useState<SessionDetail | null>(null);
@@ -378,6 +396,10 @@ export function SessionDetailModal() {
   const [error, setError] = useState('');
   const [focusTurn, setFocusTurn] = useState(1);
   const [reloadKey, setReloadKey] = useState(0);
+  const [chatQuery, setChatQuery] = useState('');
+  const [hitIdx, setHitIdx] = useState(0);
+  const [expandAll, setExpandAll] = useState<boolean | null>(null);
+  const [rawOpen, setRawOpen] = useState<Record<number, boolean>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const open = Boolean(activeDetailCatalogId);
@@ -415,6 +437,36 @@ export function SessionDetailModal() {
     [detail, detailViewMode]
   );
 
+  // 详情内全文检索：按轮次定位，命中的文本由 Markdown 渲染器高亮
+  const hits = useMemo(() => {
+    const q = chatQuery.trim().toLowerCase();
+    if (!q) return [] as number[];
+    const list: number[] = [];
+    for (const t of turns) {
+      const texts = [t.user?.text || '', ...t.blocks.flatMap(blockTexts)];
+      for (const txt of texts) {
+        const low = (txt || '').toLowerCase();
+        let from = 0;
+        for (;;) {
+          const at = low.indexOf(q, from);
+          if (at < 0) break;
+          list.push(t.index);
+          from = at + q.length;
+        }
+      }
+    }
+    return list;
+  }, [turns, chatQuery]);
+
+  const gotoHit = (delta: number) => {
+    if (!hits.length) return;
+    const next = (hitIdx + delta + hits.length) % hits.length;
+    setHitIdx(next);
+    document
+      .getElementById(`turn-${hits[next]}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   const jumpTo = (n: number) => {
     if (!turns.length) return;
     const target = Math.min(Math.max(1, n), turns.length);
@@ -434,6 +486,8 @@ export function SessionDetailModal() {
   }, [detail, activeDetailTurnIndex]);
 
   const meta = platformMeta(detail?.format);
+  // 「全部展开 / 全部收起」优先于三档模式
+  const blockOpen = expandAll === null ? detailViewMode === 'full' : expandAll;
 
   const segmented = (
     <div className="flex items-center p-0.5 rounded-md border border-line bg-surface-sunken text-[11.5px]">
@@ -520,7 +574,158 @@ export function SessionDetailModal() {
           {segmented}
         </>
       }
+      footer={
+        detail ? (
+          <div className="flex items-center justify-between gap-2">
+            <button
+              onClick={async () => {
+                if (
+                  !window.confirm(
+                    `确定彻底删除该会话？\n\n${detail.title}\n\n会同时清理其派生的子代理会话，不可撤销。`
+                  )
+                )
+                  return;
+                try {
+                  await api.deleteByCatalogId(activeDetailCatalogId!);
+                  toast.success('会话已删除');
+                  closeSessionDetail();
+                  bumpDataVersion();
+                } catch (e: any) {
+                  toast.error(`删除失败：${e.message}`);
+                }
+              }}
+              className="h-8 px-3 rounded-md border border-danger/30 bg-danger-soft text-[12.5px] text-danger inline-flex items-center gap-1.5 hover:bg-danger/10 transition-colors"
+            >
+              <Trash2 size={12} />
+              删除此会话
+            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={closeSessionDetail}
+                className="h-8 px-3 rounded-md border border-line bg-surface text-[12.5px] text-ink-soft hover:bg-surface-sunken transition-colors"
+              >
+                关闭
+              </button>
+              <button
+                onClick={() => {
+                  if (!detail || !activeDetailCatalogId) return;
+                  closeSessionDetail();
+                  setActiveMigrateSession({
+                    catalogId: activeDetailCatalogId,
+                    sessionId: detail.sessionId,
+                    format: detail.format,
+                    title: detail.title,
+                    startedAt: detail.startedAt,
+                    mtime: 0,
+                    records: detail.eventsCount,
+                    bytes: 0,
+                    tokens: 0,
+                    chatTokens: 0,
+                    filePath: '',
+                    exists: true,
+                    children: [],
+                    childrenCount: 0,
+                    lineage: '',
+                    lineageSize: 0,
+                    lineageHeadTitle: '',
+                    lineageHeadId: '',
+                    lineageHeadSteps: 0,
+                    branchLabel: '',
+                    isLineageBranch: false,
+                    sideQuestion: '',
+                    parentId: '',
+                    nestingDepth: 0,
+                    agentName: '',
+                  });
+                }}
+                className="h-8 px-3 rounded-md bg-accent text-white text-[12.5px] font-medium inline-flex items-center gap-1.5 hover:bg-accent-ink transition-colors"
+              >
+                <ArrowRightLeft size={12} />
+                迁移此会话
+              </button>
+            </div>
+          </div>
+        ) : undefined
+      }
     >
+      {/* 详情内工具栏：全文搜索 + 展开/收起 */}
+      <div className="sticky top-0 z-10 bg-surface/95 backdrop-blur border-b border-line px-4 md:px-5 py-2 flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[200px] max-w-sm">
+          <Search
+            size={13}
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none"
+          />
+          <input
+            value={chatQuery}
+            onChange={(e) => {
+              setChatQuery(e.target.value);
+              setHitIdx(0);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                gotoHit(e.shiftKey ? -1 : 1);
+              }
+            }}
+            placeholder="在本次对话中搜索（Enter 下一个 / Shift+Enter 上一个）"
+            className="w-full h-8 pl-8 pr-8 rounded-md bg-surface-muted border border-line text-[12px] text-ink placeholder:text-ink-faint focus:bg-surface"
+          />
+          {chatQuery && (
+            <button
+              onClick={() => {
+                setChatQuery('');
+                setHitIdx(0);
+              }}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-ink-faint hover:text-ink"
+              title="清除搜索"
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
+
+        {chatQuery && (
+          <div className="flex items-center gap-1 text-[11.5px] text-ink-muted tnum">
+            <span>
+              {hits.length ? Math.min(hitIdx + 1, hits.length) : 0}/{hits.length}
+            </span>
+            <button
+              onClick={() => gotoHit(-1)}
+              disabled={!hits.length}
+              className="p-0.5 rounded hover:text-ink disabled:opacity-30"
+              title="上一个匹配 (Shift+Enter)"
+            >
+              <ChevronUp size={13} />
+            </button>
+            <button
+              onClick={() => gotoHit(1)}
+              disabled={!hits.length}
+              className="p-0.5 rounded hover:text-ink disabled:opacity-30"
+              title="下一个匹配 (Enter)"
+            >
+              <ChevronDown size={13} />
+            </button>
+          </div>
+        )}
+
+        <div className="ml-auto flex items-center gap-1.5">
+          <button
+            onClick={() => setExpandAll(false)}
+            className="h-7 px-2 rounded border border-line bg-surface text-[11.5px] text-ink-muted hover:text-ink hover:bg-surface-sunken transition-colors"
+            title="全部收起为极简摘要"
+          >
+            全部收起
+          </button>
+          <button
+            onClick={() => setExpandAll(true)}
+            className="h-7 px-2 rounded border border-line bg-surface text-[11.5px] text-ink-muted hover:text-ink hover:bg-surface-sunken transition-colors"
+            title="全部展开查看完整详情"
+          >
+            全部展开
+          </button>
+        </div>
+      </div>
+
       <div ref={scrollRef} className="px-4 md:px-5 py-4 space-y-4">
         {loading && (
           <div className="py-24 flex flex-col items-center gap-2 text-ink-faint text-[12.5px]">
@@ -574,28 +779,51 @@ export function SessionDetailModal() {
                   {turn.user?.text ? (
                     <div
                       className="mt-1 md-body md-body-user"
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(turn.user.text) }}
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(turn.user.text, chatQuery) }}
                     />
                   ) : (
                     <p className="mt-1 text-[13.5px] text-ink-soft">（本轮无用户指令）</p>
                   )}
                 </div>
-                {turn.user?.text && <CopyButton text={turn.user.text} label="复制用户指令" />}
+                <div className="flex items-center gap-1 shrink-0">
+                  {turn.user?.rawText && turn.user.rawText !== turn.user.text && (
+                    <button
+                      onClick={() =>
+                        setRawOpen((prev) => ({ ...prev, [turn.index]: !prev[turn.index] }))
+                      }
+                      className={`px-1.5 py-0.5 rounded border text-[10.5px] transition-colors ${
+                        rawOpen[turn.index]
+                          ? 'border-warn/40 bg-warn-soft text-warn'
+                          : 'border-line bg-surface text-ink-faint hover:text-ink'
+                      }`}
+                      title="切换「净化后的指令」与「含系统提示的原始记录」"
+                    >
+                      {rawOpen[turn.index] ? '净化后' : '原始记录'}
+                    </button>
+                  )}
+                  {turn.user?.text && <CopyButton text={turn.user.text} label="复制用户指令" />}
+                </div>
               </div>
+
+              {turn.user && rawOpen[turn.index] && (
+                <pre className="mx-3.5 mb-2 mt-1 max-h-64 overflow-auto rounded-md border border-line bg-surface-muted p-2 text-[11px] leading-relaxed text-ink-muted font-mono whitespace-pre-wrap break-words">
+                  {turn.user.rawText}
+                </pre>
+              )}
 
               {turn.blocks.length > 0 && (
                 <div className="px-3.5 py-3 space-y-2.5">
                   {turn.blocks.map((block, i) => {
                     if (block.type === 'think')
                       return (
-                        <ThinkBlock key={i} block={block} open={detailViewMode === 'full'} />
+                        <ThinkBlock key={i} block={block} open={blockOpen} />
                       );
                     if (block.type === 'tool')
                       return (
-                        <ToolBlock key={i} block={block} open={detailViewMode === 'full'} />
+                        <ToolBlock key={i} block={block} open={blockOpen} />
                       );
                     if (block.type === 'trace')
-                      return <TraceGroup key={i} items={block.items} />;
+                      return <TraceGroup key={i} items={block.items} defaultOpen={blockOpen} />;
                     if (block.type === 'opaque')
                       return (
                         <p
@@ -609,7 +837,17 @@ export function SessionDetailModal() {
                       <div key={i} className="group/msg relative">
                         <div
                           className="md-body"
-                          dangerouslySetInnerHTML={{ __html: renderMarkdown(block.text) }}
+                          onClick={(e) => {
+                            const pre = (e.target as HTMLElement).closest('pre');
+                            if (!pre) return;
+                            const code = pre.querySelector('code')?.textContent || pre.textContent || '';
+                            navigator.clipboard
+                              .writeText(code)
+                              .then(() => toast.success('代码块已复制'))
+                              .catch(() => toast.error('复制失败'));
+                          }}
+                          title="点击代码块可复制"
+                          dangerouslySetInnerHTML={{ __html: renderMarkdown(block.text, chatQuery) }}
                         />
                         <div className="absolute top-0 right-0 opacity-0 group-hover/msg:opacity-100 transition-opacity">
                           <CopyButton text={block.text} label="复制该段回复" />

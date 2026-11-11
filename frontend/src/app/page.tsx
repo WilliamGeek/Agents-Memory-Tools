@@ -17,10 +17,11 @@ import { Loader2, MessagesSquare, HardDrive, Coins, Activity } from 'lucide-reac
 import { formatBytes, formatTokens, formatCount } from '../lib/format';
 
 export default function WorkspacePage() {
-  const { activeFilter, searchQuery, sortField, sortOrder, isScanning } = useStore();
+  const { activeFilter, searchQuery, sortField, sortOrder, isScanning, foldLineage, dataVersion } =
+    useStore();
 
   const { data, isLoading, mutate } = useSWR(
-    ['/api/sessions', activeFilter, sortField, sortOrder],
+    ['/api/sessions', activeFilter, sortField, sortOrder, dataVersion],
     () => api.getSessions({ format: activeFilter, sortBy: sortField, order: sortOrder }),
     { revalidateOnFocus: false, dedupingInterval: 2000 }
   );
@@ -38,15 +39,18 @@ export default function WorkspacePage() {
 
   const filtered = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return sessions;
-    return sessions.filter(
+    let list = sessions;
+    // 折叠同源分叉：只保留每组的主副本，避免同一对话刷屏
+    if (foldLineage) list = list.filter((s) => !(s.lineageSize > 1 && s.isLineageBranch));
+    if (!q) return list;
+    return list.filter(
       (s) =>
         s.title.toLowerCase().includes(q) ||
         s.sessionId.toLowerCase().includes(q) ||
         s.format.toLowerCase().includes(q) ||
         s.filePath.toLowerCase().includes(q)
     );
-  }, [sessions, searchQuery]);
+  }, [sessions, searchQuery, foldLineage]);
 
   const kpi = useMemo(() => {
     let weekActive = 0;

@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Search, X, ArrowDownWideNarrow, ArrowUpNarrowWide } from 'lucide-react';
+import { Search, X, ArrowDownWideNarrow, ArrowUpNarrowWide, CopyMinus } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 import { AgentFormatType } from '../../types/session';
 import { formatBytes, formatTokens, formatCount } from '../../lib/format';
@@ -24,6 +24,7 @@ const SORTS = [
   { value: 'bytes', label: '文件体积' },
   { value: 'tokens', label: 'Token 用量' },
   { value: 'title', label: '会话名称' },
+  { value: 'format', label: '平台类型' },
 ];
 
 export function Toolbar({
@@ -48,6 +49,8 @@ export function Toolbar({
     setSortField,
     sortOrder,
     toggleSortOrder,
+    foldLineage,
+    toggleFoldLineage,
   } = useStore();
 
   return (
@@ -99,6 +102,20 @@ export function Toolbar({
             ) : (
               <ArrowUpNarrowWide size={15} />
             )}
+          </button>
+
+          <button
+            onClick={toggleFoldLineage}
+            aria-pressed={foldLineage}
+            className={`h-9 px-2.5 rounded-md border text-[12px] inline-flex items-center gap-1.5 transition-colors ${
+              foldLineage
+                ? 'border-warn/40 bg-warn-soft text-warn'
+                : 'border-line bg-surface-muted text-ink-muted hover:text-ink hover:bg-surface-sunken'
+            }`}
+            title="折叠同一条对话的分叉快照（Antigravity 分叉 / 副本），只保留主副本"
+          >
+            <CopyMinus size={13} />
+            <span className="hidden sm:inline">折叠分叉</span>
           </button>
         </div>
       </div>
