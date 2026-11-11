@@ -129,7 +129,15 @@ function buildTurns(events: SessionEvent[]): Turn[] {
 /* 小组件                                                              */
 /* ------------------------------------------------------------------ */
 
-function CopyButton({ text, label }: { text: string; label: string }) {
+function CopyButton({
+  text,
+  label,
+  inverse = false,
+}: {
+  text: string;
+  label: string;
+  inverse?: boolean;
+}) {
   const [done, setDone] = useState(false);
   return (
     <button
@@ -142,11 +150,19 @@ function CopyButton({ text, label }: { text: string; label: string }) {
           toast.error('复制失败，请手动选择文本');
         }
       }}
-      className="p-1 rounded text-ink-faint hover:text-ink hover:bg-surface-sunken transition-colors"
+      className={`p-1 rounded transition-colors ${
+        inverse
+          ? 'text-white/70 hover:text-white hover:bg-white/15'
+          : 'text-ink-faint hover:text-ink hover:bg-surface-sunken'
+      }`}
       title={label}
       aria-label={label}
     >
-      {done ? <Check size={12} className="text-ok" /> : <Copy size={12} />}
+      {done ? (
+        <Check size={12} className={inverse ? 'text-emerald-300' : 'text-ok'} />
+      ) : (
+        <Copy size={12} />
+      )}
     </button>
   );
 }
@@ -250,6 +266,7 @@ function Track({
   title,
   summary,
   count,
+  metaText,
   open,
   children,
 }: {
@@ -258,6 +275,7 @@ function Track({
   title: string;
   summary?: string;
   count: number;
+  metaText?: string;
   open: boolean;
   children: React.ReactNode;
 }) {
@@ -281,7 +299,7 @@ function Track({
         </span>
         {summary && <span className="text-[11px] text-ink-muted truncate font-mono">{summary}</span>}
         <span className="ml-auto flex items-center gap-1 text-[10.5px] text-ink-faint tnum shrink-0">
-          {count > 1 && <span>{count} 项</span>}
+          {metaText && <span>{metaText}</span>}
           <ChevronDown size={11} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
         </span>
       </button>
@@ -511,6 +529,11 @@ export function SessionDetailModal() {
                     bytes: 0,
                     tokens: 0,
                     chatTokens: 0,
+                    inputTokens: 0,
+                    outputTokens: 0,
+                    thoughtsTokens: 0,
+                    contentTokens: 0,
+                    usageSource: 'estimated',
                     filePath: '',
                     exists: true,
                     children: [],
@@ -643,40 +666,43 @@ export function SessionDetailModal() {
             <section key={turn.index} id={`turn-${turn.index}`} className="space-y-2 scroll-mt-14">
               {/* 指令 */}
               {turn.user && (
-                <div className="block-user rounded-lg border px-3.5 py-2.5">
-                  <div className="flex items-center gap-2 text-[10.5px] tnum mb-1">
-                    <span className="tag-user px-1.5 py-0.5 rounded font-medium">
+                <div className="block-user-solid rounded-lg px-3.5 py-2.5">
+                  <div className="flex items-center gap-2 text-[10.5px] tnum mb-1.5">
+                    <span className="px-1.5 py-0.5 rounded bg-white/20 text-white font-medium">
                       用户指令 #{turn.index}
                     </span>
-                    <span className="text-ink-faint">{formatClock(turn.user.timestamp)}</span>
+                    <span className="text-white/70">{formatClock(turn.user.timestamp)}</span>
                     {turn.user.hiddenChars > 0 && (
-                      <span className="text-ink-faint">
+                      <span className="text-white/55">
                         · 已折叠 {turn.user.hiddenChars} 字符系统提示
                       </span>
                     )}
-                    <span className="ml-auto flex items-center gap-1">
+                    <span className="ml-auto flex items-center gap-1.5">
+                      <span className="px-1.5 py-0.5 rounded bg-white/15 text-white/85">
+                        {turn.user.text.length.toLocaleString()} 字符
+                      </span>
                       {turn.user.rawText && turn.user.rawText !== turn.user.text && (
                         <button
                           onClick={() =>
                             setRawOpen((prev) => ({ ...prev, [turn.index]: !prev[turn.index] }))
                           }
-                          className="px-1.5 py-0.5 rounded border border-user/40 bg-surface/70 text-[10.5px] text-user hover:bg-surface transition-colors"
+                          className="px-1.5 py-0.5 rounded border border-white/30 bg-white/10 text-[10.5px] text-white/90 hover:bg-white/20 transition-colors"
                           title="切换「净化后的指令」与「含系统提示的原始记录」"
                         >
                           {rawOpen[turn.index] ? '净化后' : '原始记录'}
                         </button>
                       )}
-                      <CopyButton text={turn.user.text} label="复制用户指令" />
+                      <CopyButton inverse text={turn.user.text} label="复制用户指令" />
                     </span>
                   </div>
 
                   <div
-                    className="md-body md-body-user"
+                    className="md-body md-body-inverse"
                     dangerouslySetInnerHTML={{ __html: renderMarkdown(turn.user.text, chatQuery) }}
                   />
 
                   {rawOpen[turn.index] && (
-                    <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-user/25 bg-surface/70 p-2 text-[11px] leading-relaxed text-ink-muted font-mono whitespace-pre-wrap break-words">
+                    <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-white/20 bg-black/25 p-2 text-[11px] leading-relaxed text-white/80 font-mono whitespace-pre-wrap break-words">
                       {turn.user.rawText}
                     </pre>
                   )}
@@ -691,6 +717,9 @@ export function SessionDetailModal() {
                   title="思考过程"
                   summary={firstLine(turn.thinks[0].text, 60)}
                   count={turn.thinks.length}
+                  metaText={`${turn.thinks.length} 段 · ${turn.thinks
+                    .reduce((a, t) => a + t.text.length, 0)
+                    .toLocaleString()} 字`}
                   open={expandAll}
                 >
                   {turn.thinks.map((th, i) => (
@@ -720,6 +749,9 @@ export function SessionDetailModal() {
                   title="行动"
                   summary={summarizeTools(turn.tools.map((t) => t.name))}
                   count={turn.tools.length}
+                  metaText={`${turn.tools.length} 步 · ${turn.tools
+                    .reduce((a, t) => a + t.input.length + t.output.length, 0)
+                    .toLocaleString()} 字`}
                   open={expandAll}
                 >
                   {turn.tools.map((tl, i) => (
@@ -736,6 +768,9 @@ export function SessionDetailModal() {
                       回复
                     </span>
                     <span>{formatClock(rep.ts)}</span>
+                    <span className="px-1.5 py-0.5 rounded bg-surface-sunken text-ink-muted">
+                      {rep.text.length.toLocaleString()} 字
+                    </span>
                     <span className="ml-auto">
                       <CopyButton text={rep.text} label="复制该段回复" />
                     </span>

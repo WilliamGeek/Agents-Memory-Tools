@@ -397,3 +397,58 @@ textarea:focus-visible {
   color: rgb(var(--act-rgb));
   background: rgb(var(--act-rgb) / 0.12);
 }
+
+/* 用户指令：实心靛蓝气泡（对齐旧版 .bubble.user 的渐变+光晕） */
+.block-user-solid {
+  background: linear-gradient(135deg, #4f46e5, #4338ca);
+  border: 1px solid rgba(165, 180, 252, 0.45);
+  box-shadow: 0 4px 16px rgba(79, 70, 229, 0.28);
+  color: #fff;
+}
+[data-theme='dark'] .block-user-solid {
+  background: linear-gradient(135deg, #4338ca, #3730a3);
+  border-color: rgba(165, 180, 252, 0.35);
+  box-shadow: 0 4px 18px rgba(67, 56, 202, 0.35);
+}
+
+/* 反色正文：用于深色气泡内的 Markdown */
+.md-body-inverse {
+  color: rgba(255, 255, 255, 0.94);
+}
+.md-body-inverse strong,
+.md-body-inverse h3,
+.md-body-inverse h4,
+.md-body-inverse h5,
+.md-body-inverse h6 {
+  color: #fff;
+}
+.md-body-inverse a {
+  color: #c7d2fe;
+  text-decoration-color: rgba(199, 210, 254, 0.6);
+}
+.md-body-inverse code {
+  background: rgba(15, 18, 40, 0.38);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #ffffff;
+}
+.md-body-inverse pre {
+  background: rgba(15, 18, 40, 0.45);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.md-body-inverse pre code {
+  color: rgba(255, 255, 255, 0.9);
+  background: none;
+  border: none;
+}
+.md-body-inverse blockquote {
+  border-left-color: rgba(255, 255, 255, 0.45);
+  color: rgba(255, 255, 255, 0.8);
+}
+.md-body-inverse hr {
+  border-top-color: rgba(255, 255, 255, 0.25);
+}
+.md-body-inverse mark.chat-hit {
+  background: rgba(253, 224, 71, 0.35);
+  color: #fff;
+  outline-color: rgba(253, 224, 71, 0.5);
+}

@@ -18,6 +18,8 @@ import { toast } from 'sonner';
 import { formatBytes, formatDateTime, formatTokens, stripDatePrefix } from '../../lib/format';
 import { platformMeta } from '../../lib/platform';
 
+const NL = String.fromCharCode(10);
+
 export function SessionCard({ session, onChanged }: { session: SessionItem; onChanged?: () => void }) {
   const {
     openSessionDetail,
@@ -27,18 +29,40 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
     openSessionDetail: openDetail,
   } = useStore();
   const [childrenOpen, setChildrenOpen] = useState(false);
+  const [copied, setCopied] = useState<'id' | 'path' | null>(null);
 
   const meta = platformMeta(session.format);
+  const recorded = session.usageSource === 'recorded';
+  const tokenLabel = `${recorded ? '' : '≈ '}${formatTokens(session.tokens)} Tokens`;
+  const tokenTip = recorded
+    ? [
+        '真实用量（客户端自身记录）',
+        `• 计费总量: ${session.tokens.toLocaleString()} Tokens`,
+        `• 输入（上下文累计）: ${session.inputTokens.toLocaleString()} Tokens`,
+        `• 输出（含思考）: ${session.outputTokens.toLocaleString()} Tokens`,
+        `• 思考: ${session.thoughtsTokens.toLocaleString()} Tokens`,
+        `• 内容体积（去重）: ${session.contentTokens.toLocaleString()} Tokens`,
+      ].join(NL)
+    : [
+        '估算用量（客户端未记录，按内容体积分词）',
+        `• 内容体积: ${session.tokens.toLocaleString()} Tokens`,
+        '• 实际计费通常为其数倍：每轮对话都会重发整段上下文',
+      ].join(NL);
   const selected = selectedCatalogIds.includes(session.catalogId);
   const isEmpty = session.records === 0;
   const hasChildren = session.childrenCount > 0;
   const isForkGroup = session.lineageSize > 1 && !session.isLineageBranch;
 
-  const copy = async (text: string, label: string, e: React.MouseEvent) => {
+  const copy = async (text: string, label: string, e: React.MouseEvent, key: 'id' | 'path') => {
     e.stopPropagation();
+    if (!text) {
+      toast.error(`该会话没有可复制的${label}`);
+      return;
+    }
     try {
       await navigator.clipboard.writeText(text);
-      toast.success(`已复制${label}`);
+      setCopied(key);
+      setTimeout(() => setCopied(null), 1500);
     } catch {
       toast.error('复制失败，请手动选择文本');
     }
@@ -103,12 +127,15 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
           >
             {selected && <Check size={11} strokeWidth={3} />}
           </button>
-          <span className="inline-flex items-center gap-1.5 min-w-0">
+          <span
+            className="inline-flex items-center gap-1.5 min-w-0 px-1.5 py-0.5 rounded border border-line bg-surface-muted"
+            style={{ borderColor: `${meta.color}33` }}
+          >
             <span
               className="w-1.5 h-1.5 rounded-full shrink-0"
               style={{ backgroundColor: meta.color }}
             />
-            <span className="text-[10.5px] font-medium tracking-wide uppercase text-ink-muted truncate">
+            <span className="text-[10px] font-medium tracking-wide uppercase text-ink-muted truncate">
               {meta.label}
             </span>
           </span>
@@ -168,23 +195,29 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
         <span className="text-line-strong">·</span>
         <span>{formatBytes(session.bytes)}</span>
         <span className="text-line-strong">·</span>
-        <span>{formatTokens(session.tokens)} tokens</span>
+        <span className={recorded ? '' : 'text-ink-faint'} title={tokenTip}>
+          {tokenLabel}
+        </span>
         <span className="text-line-strong">·</span>
         <button
-          onClick={(e) => copy(session.sessionId, ' UUID', e)}
-          className="inline-flex items-center gap-0.5 hover:text-ink transition-colors"
+          onClick={(e) => copy(session.sessionId, ' UUID', e, 'id')}
+          className={`inline-flex items-center gap-0.5 transition-colors ${
+            copied === 'id' ? 'text-ok' : 'hover:text-ink'
+          }`}
           title={`点击复制 UUID：${session.sessionId}`}
         >
-          <Copy size={9} />
-          {session.sessionId.slice(0, 8)}…
+          {copied === 'id' ? <Check size={9} /> : <Copy size={9} />}
+          {copied === 'id' ? '已复制' : `${session.sessionId.slice(0, 8)}…`}
         </button>
         <span className="text-line-strong">·</span>
         <button
-          onClick={(e) => copy(session.filePath, '绝对路径', e)}
-          className="hover:text-ink underline decoration-dotted underline-offset-2 transition-colors"
+          onClick={(e) => copy(session.filePath, '绝对路径', e, 'path')}
+          className={`underline decoration-dotted underline-offset-2 transition-colors ${
+            copied === 'path' ? 'text-ok no-underline' : 'hover:text-ink'
+          }`}
           title={`点击复制绝对路径：${session.filePath}`}
         >
-          绝对路径
+          {copied === 'path' ? '✓ 已复制' : '绝对路径'}
         </button>
         {hasChildren && (
           <>

@@ -52,6 +52,11 @@ export interface SessionItem {
   bytes: number;
   tokens: number;
   chatTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  thoughtsTokens: number;
+  contentTokens: number;
+  usageSource: string;
   filePath: string;
   exists: boolean;
   children: SessionChild[];
