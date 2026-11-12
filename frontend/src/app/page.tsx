@@ -123,17 +123,18 @@ export default function WorkspacePage() {
   const isLoadingMore = isValidating && sessions.length > 0;
   const isFirstLoading = !pages && isValidating;
 
-  const locallyFoldedOut = useMemo(
-    () =>
-      foldLineage
-        ? sessions.filter((s) => s.lineageSize > 1 && s.isLineageBranch).length
-        : 0,
-    [sessions, foldLineage]
-  );
+  const locallyFoldedOut = useMemo(() => {
+    // 子代理会话永久收进父卡片的「子会话」抽屉，不单独占一张卡片
+    const hiddenChildren = sessions.filter((s) => s.isChild).length;
+    const hiddenLineage = foldLineage
+      ? sessions.filter((s) => s.lineageSize > 1 && s.isLineageBranch).length
+      : 0;
+    return hiddenChildren + hiddenLineage;
+  }, [sessions, foldLineage]);
 
   const filtered = useMemo(() => {
     const q = query.toLowerCase();
-    let list = sessions;
+    let list = sessions.filter((s) => !s.isChild);
     // 折叠同源分叉：服务端 fold=1 时这里已是空操作，保留作后端未升级时的兜底
     if (foldLineage) list = list.filter((s) => !(s.lineageSize > 1 && s.isLineageBranch));
     if (!q) return list;

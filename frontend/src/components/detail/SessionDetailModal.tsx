@@ -17,6 +17,7 @@ import {
   Terminal,
   CornerDownRight,
   Bot,
+  Info,
 } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 import { api } from '../../api/client';
@@ -984,6 +985,7 @@ export function SessionDetailModal() {
                     isLineageBranch: false,
                     sideQuestion: '',
                     parentId: '',
+                    isChild: Boolean(detail.isChild),
                     nestingDepth: 0,
                     agentName: '',
                   });
@@ -1088,6 +1090,13 @@ export function SessionDetailModal() {
             >
               重新加载
             </button>
+          </div>
+        )}
+
+        {!loading && !error && detail?.notice && (
+          <div className="flex items-start gap-2 rounded-lg border border-line bg-surface-sunken px-3.5 py-2.5 text-[12px] leading-relaxed text-ink-soft">
+            <Info size={14} className="mt-0.5 shrink-0 text-ink-muted" />
+            <span>{detail.notice}</span>
           </div>
         )}
 

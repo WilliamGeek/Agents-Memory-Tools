@@ -137,6 +137,7 @@ export function normalizeSession(raw: Raw): SessionItem {
     isLineageBranch: Boolean(raw.is_lineage_branch),
     sideQuestion: str(raw.side_question),
     parentId: str(raw.parent_id),
+    isChild: Boolean(raw.is_child),
     nestingDepth: num(raw.nesting_depth),
     agentName: str(raw.agent_name),
   };

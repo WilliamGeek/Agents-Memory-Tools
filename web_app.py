@@ -107,6 +107,84 @@ def _install_antigravity_child_session_compat() -> None:
 
 _install_antigravity_child_session_compat()
 
+
+class _AntigravityRowsCompat:
+    """伪造 fetchall/fetchone 的只读结果集，用于归一化 trajectory_meta 查询结果。"""
+
+    __slots__ = ("_rows",)
+
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        return self._rows
+
+    def fetchone(self) -> tuple[Any, ...] | None:
+        return self._rows[0] if self._rows else None
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class _AntigravityTrajectoryCompat:
+    """把「唯一一条 trajectory_type=22」的读取结果归一化成 4。
+
+    只拦截 `trajectory_meta` 查询，其余 SQL 原样透传连接对象。
+    """
+
+    __slots__ = ("_conn",)
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def execute(self, sql: str, parameters: Any = ()):
+        cursor = self._conn.execute(sql, parameters)
+        if "FROM trajectory_meta" not in sql:
+            return cursor
+        rows = cursor.fetchall()
+        if len(rows) == 1 and len(rows[0]) >= 4 and rows[0][2] == 22:
+            rows = [(rows[0][0], rows[0][1], 4, rows[0][3])]
+        return _AntigravityRowsCompat(rows)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
+def _install_antigravity_trajectory_type_compat() -> None:
+    """兼容新版 Antigravity 的 cascade 轨迹类型。
+
+    旧版会话库 `trajectory_meta.trajectory_type = 4`（CLI cascade），
+    2026-11 之后的新版（IDE）写成 22；session-migrate 0.11.0 的严格校验只认 4，
+    于是整段会话解析直接失败（详情页空白 / HTTP 500）。读取路径把唯一的 22
+    按 4 再校验一次，写入路径仍走原逻辑，避免产出不合规的迁移包。
+    """
+    try:
+        from session_migrate.formats import antigravity as _ag
+        from session_migrate.errors import SessionMigrateError as _Err
+    except Exception:
+        return
+    if getattr(_ag, "_trajectory_type_compat", False):
+        return
+    original = _ag._validate_database
+
+    def lenient(db, *, expected_session_id, generated):
+        try:
+            return original(db, expected_session_id=expected_session_id, generated=generated)
+        except _Err as exc:
+            if generated or "one CLI cascade trajectory" not in str(exc):
+                raise
+        return original(
+            _AntigravityTrajectoryCompat(db),
+            expected_session_id=expected_session_id,
+            generated=generated,
+        )
+
+    _ag._validate_database = lenient
+    _ag._trajectory_type_compat = True
+
+
+_install_antigravity_trajectory_type_compat()
+
 PORT = 18922
 # 允许通过环境变量 / 命令行覆盖端口（多实例自测用；默认仍是 18922，行为不变）
 try:
@@ -3707,6 +3785,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                 events = sanitize_session_events(get_trae_session_messages(match), "trae")
             except Exception as e:
                 raise detail_service.DetailError(f"Failed to read Trae session: {e}", 500)
+            # Trae 新版把会话正文（模型回复/工具链）写入加密库，外部只能读到提问缓存；
+            # 没有 assistant 事件时必须显式说明，否则详情看起来像「丢了回复」
+            has_assistant = any(str(ev.get("role") or "") == "assistant" for ev in events)
+            notice = "" if has_assistant else (
+                "Trae 新版把模型回复与工具调用写入了加密库"
+                "（ModularData\\ai-agent\\database.db），外部工具无法解密读取；"
+                "此处仅能显示本地可读的用户提问。"
+            )
             return {
                 "session_id": match["session_id"],
                 "format": "trae",
@@ -3714,7 +3800,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "started_at": match["started_at"],
                 "events_count": len(events),
                 "events": events,
-                "notice": "",
+                "notice": notice,
             }
 
         if branch == "ag":

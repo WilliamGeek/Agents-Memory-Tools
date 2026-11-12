@@ -80,6 +80,8 @@ export interface SessionItem {
   isLineageBranch: boolean;
   sideQuestion: string;
   parentId: string;
+  /** 是否为由主会话派生的子代理会话（列表里永久收进父卡片抽屉，不单独成卡） */
+  isChild: boolean;
   nestingDepth: number;
   agentName: string;
 }

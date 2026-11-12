@@ -25,8 +25,13 @@ where pnpm >nul 2>&1
 if not errorlevel 1 set "PKG=pnpm.cmd"
 
 echo [1/2] 检查前端静态产物 ...
-if not exist "%ROOT_DIR%\frontend\out\index.html" (
-    echo       首次启动或产物缺失，正在编译静态工作台（约需 20 秒）...
+set "NEED_BUILD=0"
+set "BUILD_STATE="
+for /f %%i in ('powershell -NoProfile -Command "$s=(Get-ChildItem -LiteralPath '%ROOT_DIR%\frontend\src' -Recurse -File | Measure-Object LastWriteTime -Maximum).Maximum; $o=(Get-Item -LiteralPath '%ROOT_DIR%\frontend\out\index.html').LastWriteTime; if($s -gt $o){'STALE'}else{'OK'}" 2^>nul') do set "BUILD_STATE=%%i"
+if not exist "%ROOT_DIR%\frontend\out\index.html" set "NEED_BUILD=1"
+if /i "!BUILD_STATE!"=="STALE" set "NEED_BUILD=1"
+if "%NEED_BUILD%"=="1" (
+    echo       源码有更新或产物缺失，正在编译静态工作台（约需 20 秒）...
     pushd "%ROOT_DIR%\frontend"
     call "%PKG%" run build
     popd
@@ -41,10 +46,17 @@ if not exist "%ROOT_DIR%\frontend\out\index.html" (
 )
 
 echo [2/2] 检查核心服务引擎 (18922) ...
-netstat -ano | findstr :18922 | findstr LISTENING >nul 2>&1
+netstat -ano | findstr ":18922 " | findstr LISTENING >nul 2>&1
 if errorlevel 1 (
     start "" /min "%ROOT_DIR%\.venv\Scripts\python.exe" "%ROOT_DIR%\web_app.py"
-    echo       核心引擎已启动
+    echo       核心引擎启动中，等待端口就绪 ...
+    powershell -NoProfile -Command "$ok=$false; 1..80 | %% { try { $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',18922); $c.Close(); $ok=$true } catch {}; if($ok){break}; Start-Sleep -Milliseconds 500 }; if(-not $ok){exit 1}"
+    if errorlevel 1 (
+        echo [ERROR] 核心引擎 40 秒内未就绪，请查看 %ROOT_DIR%\.tmp\server.err.log
+        pause
+        exit /b 1
+    )
+    echo       核心引擎已就绪
 ) else (
     echo       核心引擎已在运行
 )
