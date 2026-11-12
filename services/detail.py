@@ -39,7 +39,7 @@ from . import turns as turns_service
 
 #: 解析器版本：`sanitize_session_events` / `_enrich_session_events_for_detail`
 #: 语义一改就 +1，LRU 自动全量失效
-PARSER_VERSION = 1
+PARSER_VERSION = 2
 
 #: 与前端 `ClampedText` 默认值一致的裁剪点（裁剪点落在用户本就看不到的位置）
 TR_CAP = 1200

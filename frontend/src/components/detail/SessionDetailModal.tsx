@@ -1097,19 +1097,12 @@ export function SessionDetailModal() {
           </div>
         )}
 
-        {!loading && !error && detail?.notice && (
-          <div className="flex items-start gap-2.5 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[12px] leading-relaxed mb-3">
-            <AlertTriangle size={15} className="shrink-0 mt-0.5 text-amber-400" />
-            <div className="flex-1">{detail.notice}</div>
-          </div>
-        )}
-
         {!loading &&
           !error &&
           turns.map((turn) => (
             <section key={turn.index} id={`turn-${turn.index}`} className="space-y-2 scroll-mt-14">
               {/* 指令 */}
-              {turn.user ? (
+              {turn.user && (
                 <div className="block-user-solid rounded-lg px-3.5 py-2.5">
                   <div className="flex items-center gap-2 text-[10.5px] tnum mb-1.5">
                     <span className="px-1.5 py-0.5 rounded bg-white/20 text-white font-medium">
@@ -1149,16 +1142,6 @@ export function SessionDetailModal() {
                     <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-white/20 bg-black/25 p-2 text-[11px] leading-relaxed text-white/80 font-mono whitespace-pre-wrap break-words">
                       {turn.user.rawText}
                     </pre>
-                  )}
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-sunken border border-line text-[11.5px] text-ink-muted">
-                  <Bot size={13} className="text-purple-400 shrink-0" />
-                  <span>子代理自动化执行流（由父会话派生任务，无直接用户发言）</span>
-                  {detail?.agentName && (
-                    <span className="px-1.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/30 text-purple-300 text-[10px] font-mono">
-                      {detail.agentName}
-                    </span>
                   )}
                 </div>
               )}

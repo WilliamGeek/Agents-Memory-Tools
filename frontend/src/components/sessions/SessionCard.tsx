@@ -324,18 +324,29 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
                     key={child.catalogId}
                     className="rounded-md border border-line bg-surface-muted/60 overflow-hidden hover:border-line-strong transition-colors"
                   >
-                    {/* 一级紧凑行 */}
-                    <div className="flex items-center justify-between gap-1.5 px-2.5 py-1.5 text-[11.5px]">
-                      <div className="flex items-center gap-1.5 min-w-0">
+                    {/* 一级紧凑行：优先显示标题，保留单个查看/收起按钮 */}
+                    <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-[11.5px]">
+                      <div className="flex items-center gap-1.5 min-w-0 flex-1">
                         <span className="px-1.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/30 text-purple-300 text-[10px] font-mono font-semibold shrink-0">
                           {child.agentName || 'subagent'}
                         </span>
-                        <time className="text-[10px] text-ink-faint tnum shrink-0">
-                          {child.startedAt ? stripDatePrefix(child.startedAt).slice(0, 11) : ''}
-                        </time>
+                        <span
+                          className="text-[11.5px] font-medium text-ink truncate cursor-pointer hover:text-primary transition-colors"
+                          title={child.title}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (child.catalogId) openDetail(child.catalogId);
+                          }}
+                        >
+                          {stripDatePrefix(child.title)}
+                        </span>
                       </div>
 
-                      <div className="flex items-center gap-1 text-[10px] text-ink-muted tnum shrink-0">
+                      <div className="flex items-center gap-1.5 text-[10px] text-ink-muted tnum shrink-0">
+                        <time className="text-ink-faint">
+                          {child.startedAt ? stripDatePrefix(child.startedAt).slice(0, 11) : ''}
+                        </time>
+                        <span className="text-line-strong">·</span>
                         <span>{child.records} 步</span>
                         <span className="text-line-strong">·</span>
                         <span>{formatBytes(child.bytes)}</span>
@@ -346,26 +357,15 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
                       <div className="flex items-center gap-1 shrink-0">
                         <button
                           type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (child.catalogId) openDetail(child.catalogId);
-                          }}
-                          className="px-2 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/35 text-indigo-300 text-[10.5px] font-medium hover:bg-indigo-500/25 hover:text-white transition-colors"
-                          title="直接查看该子代理会话历史"
-                        >
-                          查看
-                        </button>
-                        <button
-                          type="button"
                           onClick={(e) => toggleChildInlineCard(child.catalogId, e)}
-                          className={`px-1.5 py-0.5 rounded border text-[10.5px] inline-flex items-center gap-0.5 transition-colors ${
+                          className={`px-2 py-0.5 rounded border text-[10.5px] inline-flex items-center gap-1 transition-colors ${
                             isExpanded
                               ? 'bg-purple-500/20 border-purple-500/40 text-purple-200'
                               : 'border-line text-ink-muted hover:text-ink hover:bg-surface-sunken'
                           }`}
-                          title="就地展开完整卡片与操作按钮"
+                          title={isExpanded ? '收起详情卡片' : '展开详情卡片'}
                         >
-                          <span>卡片</span>
+                          <span>{isExpanded ? '收起' : '查看'}</span>
                           <ChevronDown
                             size={9}
                             className={`transition-transform duration-150 ${isExpanded ? 'rotate-180' : ''}`}

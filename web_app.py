@@ -1618,15 +1618,43 @@ def sanitize_session_events(events: list[dict[str, Any]], fmt: str = "") -> list
     return cleaned_events
 
 
+def _extract_antigravity_step101_prompt(payload: bytes) -> str | None:
+    """仅从子会话派生时（invoke_subagent Prompt 或 Message from Parent Agent）中提取用户/派生指令。"""
+    if not payload:
+        return None
+    try:
+        txt = payload.decode("utf-8", errors="ignore")
+        # 1. 明确匹配 invoke_subagent 的 Prompt 参数
+        m = re.search(r'\{[^{}]*"Prompt"\s*:\s*("(?:[^"\\]|\\.)*")', txt)
+        if m:
+            try:
+                val = json.loads(m.group(1))
+                if val and str(val).strip():
+                    return str(val).strip()
+            except Exception:
+                pass
+        # 2. 明确匹配 Message from Parent Agent（必须有 Message from Parent Agent 标记）
+        if "Message from Parent Agent" in txt:
+            m2 = re.search(r'\[Message\][^\r\n]*content=(.+?)(?=\s*Message from Parent Agent)', txt, re.S)
+            if m2:
+                val2 = m2.group(1).strip()
+                if val2:
+                    return val2
+    except Exception:
+        pass
+    return None
+
+
 def _enrich_session_events_for_detail(
     path: Path, fmt: str, raw_events: Any, events_data: list[dict[str, Any]]
 ) -> None:
-    """补全 session_migrate 为跨工具迁移而刻意抹除的明文思考过程，并修正原生步骤工具名错位。"""
+    """补全 session_migrate 为跨工具迁移而刻意抹除的明文思考过程，还原子代理原生指令，并修正原生步骤工具名错位。"""
     from contextlib import closing
 
     fmt_lower = (fmt or "").lower()
     if fmt_lower == "antigravity" and path and path.exists():
         think_by_idx: dict[int, str] = {}
+        prompt_by_idx: dict[int, str] = {}
         try:
             from session_migrate.formats.antigravity import (
                 _decode_message,
@@ -1635,38 +1663,66 @@ def _enrich_session_events_for_detail(
             )
 
             with closing(sqlite3.connect(f"file:{str(path)}?mode=ro", uri=True)) as conn:
-                for idx, payload in conn.execute(
-                    "SELECT idx, step_payload FROM steps WHERE step_type = 15"
+                for idx, stype, payload in conn.execute(
+                    "SELECT idx, step_type, step_payload FROM steps WHERE step_type IN (15, 101)"
                 ):
                     if not payload:
                         continue
-                    try:
-                        outer = _decode_message(payload)
-                        inner = _optional_bytes(outer, 20)
-                        if inner:
-                            t3 = _optional_text(_decode_message(inner), 3)
-                            if t3 and t3.strip():
-                                think_by_idx[int(idx)] = t3.strip()
-                    except Exception:
-                        pass
+                    if stype == 15:
+                        try:
+                            outer = _decode_message(payload)
+                            inner = _optional_bytes(outer, 20)
+                            if inner:
+                                t3 = _optional_text(_decode_message(inner), 3)
+                                if t3 and t3.strip():
+                                    think_by_idx[int(idx)] = t3.strip()
+                        except Exception:
+                            pass
+                    elif stype == 101:
+                        p_txt = _extract_antigravity_step101_prompt(payload)
+                        if p_txt:
+                            prompt_by_idx[int(idx)] = p_txt
         except Exception:
             pass
 
+        user_prompt_attached = False
         for ev, ev_dict in zip(raw_events or [], events_data):
             prov = getattr(ev, "provenance", None)
             ridx = getattr(prov, "record_index", None)
             rtype = getattr(prov, "record_type", "") or ""
-            if ev_dict.get("kind") == "thinking" and not (ev_dict.get("text") or "").strip():
+            if ridx is not None and int(ridx) in prompt_by_idx:
+                ev_dict["kind"] = "message"
+                ev_dict["role"] = "user"
+                ev_dict["text"] = prompt_by_idx[int(ridx)]
+                if not ev_dict.get("payload"):
+                    ev_dict["payload"] = {}
+                ev_dict["payload"]["source"] = "subagent_prompt"
+                user_prompt_attached = True
+            elif ev_dict.get("kind") == "thinking" and not (ev_dict.get("text") or "").strip():
                 if ridx is not None and int(ridx) in think_by_idx:
                     ev_dict["text"] = think_by_idx[int(ridx)]
             elif ev_dict.get("kind") == "tool_result":
-                # 修正 session_migrate 队列在遇到 list_dir 等原生步骤时发生的 FIFO 错位
                 if rtype == "antigravity_step_21":
                     ev_dict["tool_name"] = "run_command"
                 elif rtype == "antigravity_step_8":
                     ev_dict["tool_name"] = "view_file"
                 elif rtype == "antigravity_step_112":
                     ev_dict["tool_name"] = "shell_exec"
+
+        # 若数据库中存在 101 prompt，但未匹配到现有事件（或首位未被标记为 user），且 events_data 中尚无 user 消息
+        if prompt_by_idx and not user_prompt_attached and not any(e.get("role") == "user" for e in events_data):
+            first_idx = sorted(prompt_by_idx.keys())[0]
+            first_prompt = prompt_by_idx[first_idx]
+            first_ts = events_data[0].get("timestamp") if events_data else ""
+            events_data.insert(0, {
+                "kind": "message",
+                "role": "user",
+                "text": first_prompt,
+                "timestamp": first_ts,
+                "tool_name": "",
+                "tool_call_id": "",
+                "payload": {"source": "subagent_prompt", "record_index": first_idx},
+            })
 
     elif fmt_lower == "claude" and path and path.exists():
         think_seq: list[str] = []
@@ -3702,13 +3758,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     except Exception:
                         parent_cid = f"ag_{parent_id[:12]}"
 
-                    if parent_title:
-                        notice = (
-                            f"这是「{parent_title}」派生出的 {agent_name} 子会话，"
-                            "由子代理执行而非你直接发起，因此内容多为工具步骤。"
-                        )
-                    else:
-                        notice = f"这是 {agent_name} 子代理派生的子会话，内容多为工具步骤。"
+                    notice = ""
             except detail_service.DetailError:
                 raise
             except Exception as e:
@@ -3769,13 +3819,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 except Exception:
                     parent_cid = f"ag_{parent_id[:12]}"
 
-                if parent_title:
-                    notice = (
-                        f"这是「{parent_title}」派生出的 {agent_name} 子会话，"
-                        "由子代理执行而非你直接发起，因此内容多为工具步骤。"
-                    )
-                else:
-                    notice = f"这是 {agent_name} 子代理派生的子会话，内容多为工具步骤。"
+                notice = ""
 
         return {
             "session_id": sess.session_id,
