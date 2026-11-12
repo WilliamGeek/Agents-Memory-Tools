@@ -33,7 +33,18 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
   const [childrenState, setChildrenState] = useState<'idle' | 'loading' | 'ready' | 'error'>(
     'idle'
   );
-  const [copied, setCopied] = useState<'id' | 'path' | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [expandedChildIds, setExpandedChildIds] = useState<Set<string>>(new Set());
+
+  const toggleChildInlineCard = (childId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setExpandedChildIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(childId)) next.delete(childId);
+      else next.add(childId);
+      return next;
+    });
+  };
 
   const meta = platformMeta(session.format);
   const recorded = session.usageSource === 'recorded';
@@ -57,7 +68,7 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
   const hasChildren = session.childrenCount > 0;
   const isForkGroup = session.lineageSize > 1 && !session.isLineageBranch;
 
-  const copy = async (text: string, label: string, e: React.MouseEvent, key: 'id' | 'path') => {
+  const copy = async (text: string, label: string, e: React.MouseEvent, key: string) => {
     e.stopPropagation();
     if (!text) {
       toast.error(`该会话没有可复制的${label}`);
@@ -270,51 +281,226 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
           <>
             <span className="text-line-strong">·</span>
             <button
+              type="button"
               onClick={toggleChildren}
-              className="inline-flex items-center gap-0.5 text-accent-ink hover:underline"
-              title={`展开 / 收起下属 ${session.childrenCount} 个子代理会话`}
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                childrenOpen
+                  ? 'bg-purple-500/25 border border-purple-500/60 text-purple-200 shadow-sm'
+                  : 'bg-purple-500/10 border border-purple-500/30 text-purple-300 hover:bg-purple-500/20 hover:text-white'
+              }`}
+              title={`点击展开 / 收起下属 ${session.childrenCount} 个子代理会话`}
             >
-              ↳ {session.childrenCount} 个子会话
+              <span>↳</span>
+              <span>{session.childrenCount} 个子会话</span>
               <ChevronDown
                 size={10}
-                className={`transition-transform ${childrenOpen ? 'rotate-180' : ''}`}
+                className={`transition-transform duration-200 ${childrenOpen ? 'rotate-180' : ''}`}
               />
             </button>
           </>
         )}
       </div>
 
-      {/* 子会话：就地展开（lite 字段集下首次展开才拉取列表） */}
-      {hasChildren && (
-        <div className="mt-2">
-          {childrenOpen && (
-            <div className="mt-1.5 rounded-md border border-line bg-surface-muted divide-y divide-line/70 max-h-[220px] overflow-y-auto">
-              {childrenState === 'loading' && (
-                <div className="px-2 py-1.5 text-[11.5px] text-ink-faint">加载中…</div>
-              )}
-              {childrenState === 'error' && (
-                <div className="px-2 py-1.5 text-[11.5px] text-ink-faint">子会话列表不可用</div>
-              )}
-              {childrenState !== 'loading' &&
-                childrenState !== 'error' &&
-                childList.map((child) => (
+      {/* 子代理会话抽屉（对齐历史版本双层卡片：一级紧凑行 + 二级就地展开操作卡片） */}
+      {hasChildren && childrenOpen && (
+        <div className="mt-3 pt-2.5 border-t border-dashed border-line/80 space-y-2 anim-down">
+          <div className="flex items-center justify-between text-[11px] text-ink-muted font-medium px-0.5">
+            <span>↳ 下属子代理会话 ({session.childrenCount})</span>
+            {childrenState === 'loading' && <span className="text-ink-faint">加载中…</span>}
+          </div>
+
+          {childrenState === 'error' && (
+            <div className="px-2.5 py-2 rounded-md bg-surface-muted border border-line text-[11.5px] text-ink-faint">
+              子会话列表不可用
+            </div>
+          )}
+
+          {childrenState !== 'loading' && childrenState !== 'error' && (
+            <div className="space-y-1.5 max-h-[360px] overflow-y-auto pr-0.5">
+              {childList.map((child) => {
+                const isExpanded = expandedChildIds.has(child.catalogId);
+                return (
                   <div
                     key={child.catalogId}
-                    className="px-2 py-1.5 hover:bg-surface-sunken transition-colors"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (child.catalogId) openDetail(child.catalogId);
-                    }}
+                    className="rounded-md border border-line bg-surface-muted/60 overflow-hidden hover:border-line-strong transition-colors"
                   >
-                    <p className="text-[11.5px] text-ink-soft line-clamp-1" title={child.title}>
-                      {stripDatePrefix(child.title)}
-                    </p>
-                    <p className="text-[10px] text-ink-faint tnum mt-0.5">
-                      {child.records} 步 · {formatBytes(child.bytes)}
-                      {child.agentName ? ` · ${child.agentName}` : ''}
-                    </p>
+                    {/* 一级紧凑行 */}
+                    <div className="flex items-center justify-between gap-1.5 px-2.5 py-1.5 text-[11.5px]">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="px-1.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/30 text-purple-300 text-[10px] font-mono font-semibold shrink-0">
+                          {child.agentName || 'subagent'}
+                        </span>
+                        <time className="text-[10px] text-ink-faint tnum shrink-0">
+                          {child.startedAt ? stripDatePrefix(child.startedAt).slice(0, 11) : ''}
+                        </time>
+                      </div>
+
+                      <div className="flex items-center gap-1 text-[10px] text-ink-muted tnum shrink-0">
+                        <span>{child.records} 步</span>
+                        <span className="text-line-strong">·</span>
+                        <span>{formatBytes(child.bytes)}</span>
+                        <span className="text-line-strong">·</span>
+                        <span className="text-warn">{formatTokens(child.tokens)}</span>
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (child.catalogId) openDetail(child.catalogId);
+                          }}
+                          className="px-2 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/35 text-indigo-300 text-[10.5px] font-medium hover:bg-indigo-500/25 hover:text-white transition-colors"
+                          title="直接查看该子代理会话历史"
+                        >
+                          查看
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => toggleChildInlineCard(child.catalogId, e)}
+                          className={`px-1.5 py-0.5 rounded border text-[10.5px] inline-flex items-center gap-0.5 transition-colors ${
+                            isExpanded
+                              ? 'bg-purple-500/20 border-purple-500/40 text-purple-200'
+                              : 'border-line text-ink-muted hover:text-ink hover:bg-surface-sunken'
+                          }`}
+                          title="就地展开完整卡片与操作按钮"
+                        >
+                          <span>卡片</span>
+                          <ChevronDown
+                            size={9}
+                            className={`transition-transform duration-150 ${isExpanded ? 'rotate-180' : ''}`}
+                          />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 二级就地展开完整卡片 */}
+                    {isExpanded && (
+                      <div className="p-2.5 bg-black/15 border-t border-line space-y-2">
+                        <div className="text-[12px] font-medium text-ink leading-snug line-clamp-2" title={child.title}>
+                          {stripDatePrefix(child.title)}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[10.5px] text-ink-muted tnum">
+                          <span>{child.records} 步</span>
+                          <span className="text-line-strong">·</span>
+                          <span>{formatBytes(child.bytes)}</span>
+                          <span className="text-line-strong">·</span>
+                          <span>{Number(child.tokens || 0).toLocaleString()} Tokens</span>
+                          <span className="text-line-strong">·</span>
+                          <button
+                            type="button"
+                            onClick={(e) => copy(child.sessionId, ' UUID', e, `child-id-${child.catalogId}`)}
+                            className={`inline-flex items-center gap-0.5 transition-colors ${
+                              copied === `child-id-${child.catalogId}` ? 'text-ok font-medium' : 'hover:text-ink'
+                            }`}
+                            title={`点击复制 UUID: ${child.sessionId}`}
+                          >
+                            {copied === `child-id-${child.catalogId}` ? <Check size={8} /> : <Copy size={8} />}
+                            {copied === `child-id-${child.catalogId}` ? '已复制' : `${child.sessionId.slice(0, 8)}…`}
+                          </button>
+                          {child.filePath && (
+                            <>
+                              <span className="text-line-strong">·</span>
+                              <button
+                                type="button"
+                                onClick={(e) => copy(child.filePath!, '绝对路径', e, `child-path-${child.catalogId}`)}
+                                className={`inline-flex items-center gap-0.5 underline decoration-dotted underline-offset-2 transition-colors ${
+                                  copied === `child-path-${child.catalogId}` ? 'text-ok no-underline font-medium' : 'hover:text-ink'
+                                }`}
+                                title={`绝对路径: ${child.filePath}`}
+                              >
+                                {copied === `child-path-${child.catalogId}` ? (
+                                  <>
+                                    <Check size={8} />
+                                    <span>已复制</span>
+                                  </>
+                                ) : (
+                                  '绝对路径'
+                                )}
+                              </button>
+                            </>
+                          )}
+                        </div>
+
+                        {/* 4 个操作按钮 */}
+                        <div className="flex items-center gap-1 pt-1">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (child.catalogId) openDetail(child.catalogId);
+                            }}
+                            className="flex-1 h-6 rounded border border-line bg-surface text-[10.5px] text-ink-soft hover:bg-surface-sunken hover:text-ink transition-colors"
+                            title="查看该子会话详细交互"
+                          >
+                            查看详情
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveMigrateSession({
+                                ...session,
+                                catalogId: child.catalogId,
+                                sessionId: child.sessionId,
+                                title: child.title,
+                                bytes: child.bytes,
+                                tokens: child.tokens,
+                                records: child.records,
+                                filePath: child.filePath || '',
+                                children: [],
+                                childrenCount: 0,
+                              });
+                            }}
+                            className="flex-1 h-6 rounded bg-accent text-white text-[10.5px] font-medium hover:bg-accent-ink transition-colors"
+                            title="跨平台迁移该会话"
+                          >
+                            迁移
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              if (!window.confirm(`确定彻底删除该子代理会话？\n\n${child.title}`)) return;
+                              try {
+                                const res = await api.deleteByCatalogId(child.catalogId);
+                                toast.success(`子会话已删除，释放 ${(res.freed_bytes / 1024).toFixed(1)} KB`);
+                                setFetchedChildren((prev) => (prev ? prev.filter((c) => c.catalogId !== child.catalogId) : null));
+                                onChanged?.();
+                              } catch (err: any) {
+                                toast.error(`删除失败：${err.message}`);
+                              }
+                            }}
+                            className="flex-1 h-6 rounded border border-line bg-surface text-[10.5px] text-ink-muted hover:bg-danger-soft hover:text-danger hover:border-danger/30 transition-colors"
+                            title="删除该子代理会话"
+                          >
+                            删除
+                          </button>
+                          {child.filePath && (
+                            <button
+                              type="button"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                try {
+                                  await api.openFolder(child.filePath!);
+                                  toast.success('已在资源管理器中定位');
+                                } catch (err: any) {
+                                  toast.error(`打开目录失败：${err.message}`);
+                                }
+                              }}
+                              className="w-6 h-6 rounded border border-line bg-surface text-ink-muted inline-flex items-center justify-center hover:bg-surface-sunken hover:text-ink transition-colors"
+                              title="打开所在资源管理器并选中文件"
+                            >
+                              <FolderOpen size={11} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                ))}
+                );
+              })}
             </div>
           )}
         </div>

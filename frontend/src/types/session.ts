@@ -48,6 +48,7 @@ export interface SessionChild {
   format: string;
   agentName: string;
   isChild: boolean;
+  filePath?: string;
 }
 
 export interface SessionItem {
@@ -103,6 +104,11 @@ export interface SessionDetail {
   model: string;
   cwd: string;
   notice: string;
+  isChild?: boolean;
+  parentId?: string;
+  parentTitle?: string;
+  parentCatalogId?: string;
+  agentName?: string;
   /** 本次响应覆盖的起始轮（0 基；后端未支持分片时为 0） */
   turnOffset: number;
   /** 本次响应请求的轮数（0 表示后端未支持分片） */

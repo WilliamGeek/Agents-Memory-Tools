@@ -3688,7 +3688,20 @@ class RequestHandler(BaseHTTPRequestHandler):
                     is_child = True
                     parent_title, found_agent = antigravity_parent_title(sess.session_id, ag_sums)
                     agent_name = agent_name or found_agent or "子代理"
-                    parent_cid = f"ag_{parent_id[:12]}"
+                    try:
+                        db = get_catalog_db()
+                        p_row = db.execute(
+                            "SELECT catalog_id FROM sessions WHERE session_id = ? OR session_id LIKE ?",
+                            (parent_id, f"{parent_id}%"),
+                        ).fetchone()
+                        db.close()
+                        if p_row and p_row[0]:
+                            parent_cid = p_row[0]
+                        else:
+                            parent_cid = f"ag_{parent_id[:12]}"
+                    except Exception:
+                        parent_cid = f"ag_{parent_id[:12]}"
+
                     if parent_title:
                         notice = (
                             f"这是「{parent_title}」派生出的 {agent_name} 子会话，"
@@ -3725,6 +3738,45 @@ class RequestHandler(BaseHTTPRequestHandler):
             events_data = sanitize_session_events(events_data, sess.source_format.value)
         except Exception as e:
             raise detail_service.DetailError(f"Failed to parse session content: {e}", 500)
+
+        is_child = False
+        parent_id = ""
+        parent_title = ""
+        parent_cid = ""
+        agent_name = ""
+        notice = ""
+
+        if src_format == AgentFormat.ANTIGRAVITY:
+            ag_sums = load_antigravity_summaries_map()
+            info = ag_sums.get(sess.session_id, {})
+            parent_id = (info.get("parent_id") or "").strip()
+            agent_name = (info.get("agent_name") or "").strip()
+            if parent_id:
+                is_child = True
+                parent_title, found_agent = antigravity_parent_title(sess.session_id, ag_sums)
+                agent_name = agent_name or found_agent or "子代理"
+                try:
+                    db = get_catalog_db()
+                    p_row = db.execute(
+                        "SELECT catalog_id FROM sessions WHERE session_id = ? OR session_id LIKE ?",
+                        (parent_id, f"{parent_id}%"),
+                    ).fetchone()
+                    db.close()
+                    if p_row and p_row[0]:
+                        parent_cid = p_row[0]
+                    else:
+                        parent_cid = f"ag_{parent_id[:12]}"
+                except Exception:
+                    parent_cid = f"ag_{parent_id[:12]}"
+
+                if parent_title:
+                    notice = (
+                        f"这是「{parent_title}」派生出的 {agent_name} 子会话，"
+                        "由子代理执行而非你直接发起，因此内容多为工具步骤。"
+                    )
+                else:
+                    notice = f"这是 {agent_name} 子代理派生的子会话，内容多为工具步骤。"
+
         return {
             "session_id": sess.session_id,
             "format": sess.source_format.value,
@@ -3737,6 +3789,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             "cli_version": sess.cli_version,
             "events_count": len(events_data),
             "events": events_data,
+            "notice": notice,
+            "is_child": is_child,
+            "parent_id": parent_id,
+            "parent_title": parent_title,
+            "parent_catalog_id": parent_cid,
+            "agent_name": agent_name,
         }
 
     def handle_get_session_detail(self, query: dict[str, list[str]]):

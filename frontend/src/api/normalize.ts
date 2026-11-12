@@ -99,6 +99,7 @@ export function normalizeChild(raw: Raw): SessionChild {
     format: str(raw.format),
     agentName: str(raw.agent_name),
     isChild: Boolean(raw.is_child),
+    filePath: str(raw.file_path),
   };
 }
 
@@ -191,6 +192,11 @@ export function normalizeDetail(raw: Raw): SessionDetail {
     model: str(raw.model),
     cwd: str(raw.cwd),
     notice: str(raw.notice),
+    isChild: Boolean(raw.is_child),
+    parentId: str(raw.parent_id),
+    parentTitle: str(raw.parent_title),
+    parentCatalogId: str(raw.parent_catalog_id),
+    agentName: str(raw.agent_name),
     turnOffset: num(raw.turn_offset),
     // turn_limit 缺省记为 0：调用方据此判断"后端未支持分片"
     turnLimit: num(raw.turn_limit),
