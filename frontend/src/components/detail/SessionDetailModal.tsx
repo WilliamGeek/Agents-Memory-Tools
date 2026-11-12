@@ -417,9 +417,6 @@ function ToolRow({ tool, fetchEvent }: { tool: ToolItem; fetchEvent?: FetchEvent
       >
         <span className="text-[11px] shrink-0">{meta.icon}</span>
         <span className="text-[11.5px] font-medium text-act shrink-0">{meta.label}</span>
-        {tool.name && tool.name !== meta.label && (
-          <span className="text-[10.5px] font-mono text-ink-faint shrink-0">{tool.name}</span>
-        )}
         {tool.input && (
           <span className="text-[11px] text-ink-muted font-mono truncate">{tool.input}</span>
         )}
@@ -437,6 +434,15 @@ function ToolRow({ tool, fetchEvent }: { tool: ToolItem; fetchEvent?: FetchEvent
 
       {open && (
         <div className="px-2.5 pb-2 space-y-1.5 border-t border-act/20">
+          <div className="pt-1.5 text-[10px] text-ink-faint">
+            {tool.name && tool.name !== 'tool' ? (
+              <>
+                工具标识 <span className="font-mono text-ink-muted">{tool.name}</span>
+              </>
+            ) : (
+              '工具标识未记录'
+            )}
+          </div>
           {tool.input && (
             <div className="pt-1.5">
               <div className="text-[10px] text-ink-faint mb-0.5">参数</div>
