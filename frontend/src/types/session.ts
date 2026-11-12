@@ -26,6 +26,15 @@ export interface SessionEvent {
   hiddenChars: number;
   collapsed: boolean;
   summary: string;
+  /** 服务端裁剪标记：true 表示 text 已被截断，完整内容需单事件回源 */
+  truncated: boolean;
+  /** 服务端本次实际藏掉的字符数（配合 /api/session/event 回源） */
+  truncatedChars: number;
+  /**
+   * 该事件在会话**全量事件**里的绝对下标（分片模式下由 `event_index[]` 回填）。
+   * 回源 `/api/session/event` 时用它，不能用 `turns[].start`（slim 后下标不连续）。
+   */
+  eventIndex: number;
 }
 
 export interface SessionChild {
@@ -74,16 +83,60 @@ export interface SessionItem {
   agentName: string;
 }
 
+/** 服务端返回的轮次边界（绝对轮号由 index 决定，slice 由 start/end 决定） */
+export interface SessionTurnSpan {
+  index: number;
+  start: number;
+  end: number;
+  userPreview: string;
+  ts: string;
+}
+
 export interface SessionDetail {
   sessionId: string;
   format: string;
   title: string;
   startedAt: string;
+  /** 全量事件数（旧语义，未分片时也成立） */
   eventsCount: number;
   events: SessionEvent[];
   model: string;
   cwd: string;
   notice: string;
+  /** 本次响应覆盖的起始轮（0 基；后端未支持分片时为 0） */
+  turnOffset: number;
+  /** 本次响应请求的轮数（0 表示后端未支持分片） */
+  turnLimit: number;
+  /** 会话总轮数（0 表示后端未返回该字段） */
+  turnsTotal: number;
+  /** 是否还有后续轮次（后端未支持分片时恒为 false） */
+  hasMoreTurns: boolean;
+  /** 下一页的起始轮号（服务端给；0 表示没有下一页） */
+  nextTurnOffset: number;
+  /** 本次响应覆盖的轮次边界列表 */
+  turns: SessionTurnSpan[];
+  /**
+   * 与 `events` **逐项平行**的绝对轮号数组（1 基，与 FTS 的 turn_index 同源）。
+   * 唯一的可信轮次映射来源：`turns[].start/end` 是原始事件下标空间，
+   * 与裁剪后的 events 不可互换。
+   */
+  turnIndexes: number[];
+  /** 与 `events` 逐项平行的绝对事件下标（回源 /api/session/event 用） */
+  eventIndexes: number[];
+  /** 超预算单轮的切片序号 */
+  part: number;
+}
+
+/** 单事件回源响应（/api/session/event） */
+export interface SessionEventDetail {
+  catalogId: string;
+  index: number;
+  kind: string;
+  role: string;
+  timestamp: string;
+  text: string;
+  payload: unknown;
+  bytes: number;
 }
 
 export interface AppStatus {
@@ -119,7 +172,25 @@ export interface SearchResponse {
   totalIndexedTurns: number;
 }
 
-export interface SessionListResponse {
+/** 会话内检索命中项：只需要轮号与摘要 */
+export interface SessionSearchMatch {
+  turnIndex: number;
+  role: string;
+  timestamp: string;
+  snippet: string;
+}
+
+/** 列表分页元信息（后端未升级时缺省） */
+export interface SessionListMeta {
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+  snapshot: string;
+}
+
+export interface SessionListResponse extends SessionListMeta {
   sessions: SessionItem[];
+  /** 本页条数（旧语义，与后端 count 一致） */
   count: number;
 }

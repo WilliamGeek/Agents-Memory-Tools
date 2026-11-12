@@ -110,24 +110,24 @@ python -m venv .venv
 # 3. 安装依赖包
 pip install -r requirements.txt
 # 或手动安装关键组件:
-pip install session-migrate tiktoken tokenizers bottle
+pip install session-migrate tiktoken tokenizers
 
-# 4. 前端工作台依赖（Node.js 20+）
+# 4. 构建前端工作台（Node.js 20+，产物将导出至 frontend/out 由后端统一托管）
 cd frontend
 npm install
 npm run build
 cd ..
 
-# 5. 启动可视化控制台
+# 5. 启动统一控制台（单端口服务）
 python web_app.py
 ```
 
-服务就绪后，后端 API 监听 `http://127.0.0.1:18922`，前端工作台监听 `http://localhost:3000`。
-只启动 `web_app.py` 时仍可使用内置单页界面，双服务模式则提供 React 版工作台（首次启动会自动构建）。
+服务就绪后，直接在浏览器访问统一地址：`http://127.0.0.1:18922`。
+Python 服务端在同一端口下直接托管现代 React 静态工作台并提供完整数据 API，无需维护 Node.js 额外端口与跨端口代理。若本地未构建前端产物，系统将自动回退到内置基础控制台。
 
 > 💡 **Windows 便捷启动**：
 > 目录下已内置三个脚本：
-> - `启动Memory Tools.cmd`：一键拉起前后端（缺构建产物时自动编译）
+> - `启动Memory Tools.cmd`：一键启动统一控制台（若缺失前端产物将自动编译）
 > - `后台静默启动Memory Tools.vbs`：后台无窗口静默常驻
 > - `停止Memory Tools.cmd`：一键终止后台服务
 

@@ -1,0 +1,19 @@
+{
+  "status": {
+    "bytes": 3294,
+    "ms": 772,
+    "total_sessions": 353,
+    "roots": 8
+  },
+  "sessions": {
+    "bytes": 277034,
+    "ms": 589,
+    "count": 353
+  },
+  "detail": {
+    "bytes": 4520694,
+    "ms": 1205,
+    "events_count": 6635,
+    "catalog_id": "1eaa5a8745ff40cb"
+  }
+}

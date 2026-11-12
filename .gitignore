@@ -24,3 +24,13 @@ token_cache.json
 .idea/
 .DS_Store
 Thumbs.db
+
+# 本轮改造产生的临时产物
+.tmp/
+_verify/
+.playwright-cli/
+shots/
+_big.json
+_s.json
+_tmp*.json
+frontend/_*.log

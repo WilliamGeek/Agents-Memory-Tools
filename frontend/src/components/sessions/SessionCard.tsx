@@ -11,7 +11,7 @@ import {
   CopyMinus,
   ChevronDown,
 } from 'lucide-react';
-import { SessionItem } from '../../types/session';
+import { SessionChild, SessionItem } from '../../types/session';
 import { useStore } from '../../store/useStore';
 import { api } from '../../api/client';
 import { toast } from 'sonner';
@@ -29,6 +29,10 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
     openSessionDetail: openDetail,
   } = useStore();
   const [childrenOpen, setChildrenOpen] = useState(false);
+  const [fetchedChildren, setFetchedChildren] = useState<SessionChild[] | null>(null);
+  const [childrenState, setChildrenState] = useState<'idle' | 'loading' | 'ready' | 'error'>(
+    'idle'
+  );
   const [copied, setCopied] = useState<'id' | 'path' | null>(null);
 
   const meta = platformMeta(session.format);
@@ -98,6 +102,42 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
       toast.error(`删除失败：${err.message}`);
     }
   };
+
+  /**
+   * 子会话按需拉取。
+   *
+   * lite 字段集只带 children_count、不再带 children，所以首次展开时才请求
+   * /api/session/children；全量字段集（后端未升级）下 children 已在手，直接复用，
+   * 不产生额外请求——展开行为与改造前一致。
+   */
+  const toggleChildren = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const next = !childrenOpen;
+    setChildrenOpen(next);
+    if (!next) return;
+    if (childrenState === 'loading' || childrenState === 'ready') return;
+    if (session.children.length > 0) {
+      setFetchedChildren(session.children);
+      setChildrenState('ready');
+      return;
+    }
+    if (!session.catalogId) {
+      setFetchedChildren([]);
+      setChildrenState('error');
+      return;
+    }
+    setChildrenState('loading');
+    try {
+      const list = await api.getSessionChildren(session.catalogId, { strict: true });
+      setFetchedChildren(list);
+      setChildrenState('ready');
+    } catch {
+      setFetchedChildren([]);
+      setChildrenState('error');
+    }
+  };
+
+  const childList = fetchedChildren ?? session.children;
 
   return (
     <article
@@ -212,21 +252,25 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
         <span className="text-line-strong">·</span>
         <button
           onClick={(e) => copy(session.filePath, '绝对路径', e, 'path')}
-          className={`underline decoration-dotted underline-offset-2 transition-colors ${
-            copied === 'path' ? 'text-ok no-underline' : 'hover:text-ink'
+          className={`inline-flex items-center gap-0.5 underline decoration-dotted underline-offset-2 transition-colors ${
+            copied === 'path' ? 'text-ok no-underline font-medium' : 'hover:text-ink'
           }`}
           title={`点击复制绝对路径：${session.filePath}`}
         >
-          {copied === 'path' ? '✓ 已复制' : '绝对路径'}
+          {copied === 'path' ? (
+            <>
+              <Check size={9} />
+              <span>已复制</span>
+            </>
+          ) : (
+            '绝对路径'
+          )}
         </button>
         {hasChildren && (
           <>
             <span className="text-line-strong">·</span>
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setChildrenOpen((v) => !v);
-              }}
+              onClick={toggleChildren}
               className="inline-flex items-center gap-0.5 text-accent-ink hover:underline"
               title={`展开 / 收起下属 ${session.childrenCount} 个子代理会话`}
             >
@@ -240,29 +284,37 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
         )}
       </div>
 
-      {/* 子会话：就地展开 */}
+      {/* 子会话：就地展开（lite 字段集下首次展开才拉取列表） */}
       {hasChildren && (
         <div className="mt-2">
           {childrenOpen && (
             <div className="mt-1.5 rounded-md border border-line bg-surface-muted divide-y divide-line/70 max-h-[220px] overflow-y-auto">
-              {session.children.map((child) => (
-                <div
-                  key={child.catalogId}
-                  className="px-2 py-1.5 hover:bg-surface-sunken transition-colors"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (child.catalogId) openDetail(child.catalogId);
-                  }}
-                >
-                  <p className="text-[11.5px] text-ink-soft line-clamp-1" title={child.title}>
-                    {stripDatePrefix(child.title)}
-                  </p>
-                  <p className="text-[10px] text-ink-faint tnum mt-0.5">
-                    {child.records} 步 · {formatBytes(child.bytes)}
-                    {child.agentName ? ` · ${child.agentName}` : ''}
-                  </p>
-                </div>
-              ))}
+              {childrenState === 'loading' && (
+                <div className="px-2 py-1.5 text-[11.5px] text-ink-faint">加载中…</div>
+              )}
+              {childrenState === 'error' && (
+                <div className="px-2 py-1.5 text-[11.5px] text-ink-faint">子会话列表不可用</div>
+              )}
+              {childrenState !== 'loading' &&
+                childrenState !== 'error' &&
+                childList.map((child) => (
+                  <div
+                    key={child.catalogId}
+                    className="px-2 py-1.5 hover:bg-surface-sunken transition-colors"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (child.catalogId) openDetail(child.catalogId);
+                    }}
+                  >
+                    <p className="text-[11.5px] text-ink-soft line-clamp-1" title={child.title}>
+                      {stripDatePrefix(child.title)}
+                    </p>
+                    <p className="text-[10px] text-ink-faint tnum mt-0.5">
+                      {child.records} 步 · {formatBytes(child.bytes)}
+                      {child.agentName ? ` · ${child.agentName}` : ''}
+                    </p>
+                  </div>
+                ))}
             </div>
           )}
         </div>

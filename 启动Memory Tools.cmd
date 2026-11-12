@@ -9,9 +9,8 @@ cd /d "%ROOT_DIR%"
 title Agents Memory Tools
 
 echo ======================================================================
-echo   Agents Memory Tools - 跨智能体会话记忆工作台
-echo   Web      : http://localhost:3000    (Next.js + React)
-echo   Backend  : http://127.0.0.1:18922  (Python SQLite FTS5)
+echo   Agents Memory Tools - 跨智能体会话记忆工作台 (单端口极速架构)
+echo   访问地址: http://127.0.0.1:18922  (React 现代化工作台 + Python SQLite FTS5)
 echo ======================================================================
 echo.
 
@@ -21,58 +20,41 @@ if not exist "%ROOT_DIR%\.venv\Scripts\python.exe" (
     exit /b 1
 )
 
-where node >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] 未检测到 Node.js，请先安装 Node.js 20 或更高版本。
-    pause
-    exit /b 1
-)
-
 set "PKG=npm.cmd"
 where pnpm >nul 2>&1
 if not errorlevel 1 set "PKG=pnpm.cmd"
 
-echo [1/3] 检查 Python 核心引擎 (18922) ...
-netstat -ano | findstr :18922 | findstr LISTENING >nul 2>&1
-if errorlevel 1 (
-    start "" /min "%ROOT_DIR%\.venv\Scripts\python.exe" "%ROOT_DIR%\web_app.py"
-    echo       已启动
-) else (
-    echo       已在运行，跳过
-)
-
-echo [2/3] 检查前端构建产物 ...
-if not exist "%ROOT_DIR%\frontend\.next\BUILD_ID" (
-    echo       首次启动或构建缺失，正在编译前端（约需 1 分钟）...
+echo [1/2] 检查前端静态产物 ...
+if not exist "%ROOT_DIR%\frontend\out\index.html" (
+    echo       首次启动或产物缺失，正在编译静态工作台（约需 20 秒）...
     pushd "%ROOT_DIR%\frontend"
     call "%PKG%" run build
     popd
-    if not exist "%ROOT_DIR%\frontend\.next\BUILD_ID" (
+    if not exist "%ROOT_DIR%\frontend\out\index.html" (
         echo [ERROR] 前端构建失败，请检查 Node 依赖是否完整。
         pause
         exit /b 1
     )
     echo       构建完成
 ) else (
-    echo       构建产物已就绪
+    echo       静态产物已就绪
 )
 
-echo [3/3] 启动 Web 工作台 (3000) ...
-netstat -ano | findstr :3000 | findstr LISTENING >nul 2>&1
+echo [2/2] 检查核心服务引擎 (18922) ...
+netstat -ano | findstr :18922 | findstr LISTENING >nul 2>&1
 if errorlevel 1 (
-    pushd "%ROOT_DIR%\frontend"
-    start "" /min cmd /c "%PKG% run start"
-    popd
-    ping 127.0.0.1 -n 4 >nul
+    start "" /min "%ROOT_DIR%\.venv\Scripts\python.exe" "%ROOT_DIR%\web_app.py"
+    echo       核心引擎已启动
 ) else (
-    echo       已在运行，跳过
+    echo       核心引擎已在运行
 )
 
-start "" http://localhost:3000
+start "" http://127.0.0.1:18922
 
 echo.
 echo ======================================================================
-echo   已就绪：http://localhost:3000
+echo   已就绪：http://127.0.0.1:18922
+echo   单端口服务由 Python 引擎统一托管，无需占用额外 Node 端口。
 echo   停止服务：运行「停止Memory Tools.cmd」，或在此按任意键
 echo ======================================================================
 pause >nul

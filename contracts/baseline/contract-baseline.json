@@ -1,0 +1,1000 @@
+{
+  "base": "http://127.0.0.1:18922",
+  "captured_at": "2026-11-12T08:13:41",
+  "detail_cid": "1eaa5a8745ff40cb",
+  "get": {
+    "search_content": {
+      "method": "GET",
+      "path": "/api/search/content?q=Git&limit=5",
+      "schema": {
+        "fields": {
+          "count": {
+            "type": "number"
+          },
+          "latency_ms": {
+            "type": "number"
+          },
+          "query": {
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "fields": {
+                "catalog_id": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "session_format": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "session_title": {
+                  "type": "string"
+                },
+                "snippet": {
+                  "type": "string"
+                },
+                "timestamp": {
+                  "type": "string"
+                },
+                "turn_index": {
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "total_indexed_files": {
+            "type": "number"
+          },
+          "total_indexed_turns": {
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "status": 200
+    },
+    "session_detail": {
+      "method": "GET",
+      "path": "/api/session/detail?catalog_id=1eaa5a8745ff40cb",
+      "schema": {
+        "fields": {
+          "cli_version": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "null"
+          },
+          "elapsed_ms": {
+            "type": "number"
+          },
+          "events": {
+            "items": {
+              "fields": {
+                "kind": {
+                  "type": "string"
+                },
+                "payload": {
+                  "fields": {
+                    "reason": {
+                      "type": "string"
+                    },
+                    "source_step_type": {
+                      "type": "number"
+                    }
+                  },
+                  "type": "object"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "timestamp": {
+                  "type": "string"
+                },
+                "tool_call_id": {
+                  "type": "string"
+                },
+                "tool_name": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "events_count": {
+            "type": "number"
+          },
+          "events_shipped": {
+            "type": "number"
+          },
+          "events_total_raw": {
+            "type": "number"
+          },
+          "format": {
+            "type": "string"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "null"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "slim": {
+            "type": "number"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "turn_index": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "turn_limit": {
+            "type": "number"
+          },
+          "turn_offset": {
+            "type": "number"
+          },
+          "turns": {
+            "items": {
+              "fields": {
+                "end": {
+                  "type": "number"
+                },
+                "index": {
+                  "type": "number"
+                },
+                "start": {
+                  "type": "number"
+                },
+                "timestamp": {
+                  "type": "string"
+                },
+                "user_preview": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "turns_total": {
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "status": 200
+    },
+    "session_inspect": {
+      "method": "GET",
+      "path": "/api/session/inspect?catalog_id=1eaa5a8745ff40cb",
+      "schema": {
+        "fields": {
+          "file_size": {
+            "type": "number"
+          },
+          "kind_breakdown": {
+            "fields": {
+              "message": {
+                "type": "number"
+              },
+              "opaque": {
+                "type": "number"
+              },
+              "thinking": {
+                "type": "number"
+              },
+              "tool_call": {
+                "type": "number"
+              },
+              "tool_result": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "role_breakdown": {
+            "fields": {
+              "assistant": {
+                "type": "number"
+              },
+              "tool": {
+                "type": "number"
+              },
+              "user": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "source_format": {
+            "type": "string"
+          },
+          "total_events": {
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "status": 200
+    },
+    "sessions_all": {
+      "method": "GET",
+      "path": "/api/sessions",
+      "schema": {
+        "fields": {
+          "count": {
+            "type": "number"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "meta": {
+            "fields": {
+              "build_count": {
+                "type": "number"
+              },
+              "build_ms": {
+                "type": "number"
+              },
+              "fields": {
+                "type": "string"
+              },
+              "fold": {
+                "type": "boolean"
+              },
+              "generation": {
+                "type": "number"
+              },
+              "has_more": {
+                "type": "boolean"
+              },
+              "limit": {
+                "type": "number"
+              },
+              "ms": {
+                "type": "number"
+              },
+              "offset": {
+                "type": "number"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "total": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "offset": {
+            "type": "number"
+          },
+          "sessions": {
+            "items": {
+              "fields": {
+                "aux_tokens": {
+                  "type": "number"
+                },
+                "bytes": {
+                  "type": "number"
+                },
+                "catalog_id": {
+                  "type": "string"
+                },
+                "chat_tokens": {
+                  "type": "number"
+                },
+                "children": {
+                  "items": {
+                    "type": "any"
+                  },
+                  "type": "array"
+                },
+                "children_count": {
+                  "type": "number"
+                },
+                "content_tokens": {
+                  "type": "number"
+                },
+                "exists": {
+                  "type": "boolean"
+                },
+                "file_path": {
+                  "type": "string"
+                },
+                "format": {
+                  "type": "string"
+                },
+                "input_tokens": {
+                  "type": "number"
+                },
+                "mtime": {
+                  "type": "number"
+                },
+                "output_tokens": {
+                  "type": "number"
+                },
+                "records": {
+                  "type": "number"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "started_at": {
+                  "type": "string"
+                },
+                "thoughts_tokens": {
+                  "type": "number"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "tokens": {
+                  "type": "number"
+                },
+                "usage_source": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "snapshot": {
+            "type": "string"
+          },
+          "total": {
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "status": 200
+    },
+    "sessions_format_antigravity": {
+      "method": "GET",
+      "path": "/api/sessions?format=antigravity",
+      "schema": {
+        "fields": {
+          "count": {
+            "type": "number"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "meta": {
+            "fields": {
+              "build_count": {
+                "type": "number"
+              },
+              "build_ms": {
+                "type": "number"
+              },
+              "fields": {
+                "type": "string"
+              },
+              "fold": {
+                "type": "boolean"
+              },
+              "generation": {
+                "type": "number"
+              },
+              "has_more": {
+                "type": "boolean"
+              },
+              "limit": {
+                "type": "number"
+              },
+              "ms": {
+                "type": "number"
+              },
+              "offset": {
+                "type": "number"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "total": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "offset": {
+            "type": "number"
+          },
+          "sessions": {
+            "items": {
+              "fields": {
+                "agent_name": {
+                  "type": "string"
+                },
+                "aux_tokens": {
+                  "type": "number"
+                },
+                "branch_label": {
+                  "type": "string"
+                },
+                "bytes": {
+                  "type": "number"
+                },
+                "catalog_id": {
+                  "type": "string"
+                },
+                "chat_tokens": {
+                  "type": "number"
+                },
+                "children": {
+                  "items": {
+                    "type": "mixed",
+                    "types": [
+                      "any",
+                      "mixed"
+                    ]
+                  },
+                  "type": "array"
+                },
+                "children_count": {
+                  "type": "number"
+                },
+                "content_tokens": {
+                  "type": "number"
+                },
+                "exists": {
+                  "type": "boolean"
+                },
+                "file_path": {
+                  "type": "string"
+                },
+                "format": {
+                  "type": "string"
+                },
+                "input_tokens": {
+                  "type": "number"
+                },
+                "is_lineage_branch": {
+                  "type": "boolean"
+                },
+                "lineage": {
+                  "type": "string"
+                },
+                "lineage_head_id": {
+                  "type": "string"
+                },
+                "lineage_head_steps": {
+                  "type": "number"
+                },
+                "lineage_head_title": {
+                  "type": "string"
+                },
+                "lineage_size": {
+                  "type": "number"
+                },
+                "mtime": {
+                  "type": "number"
+                },
+                "nesting_depth": {
+                  "type": "number"
+                },
+                "output_tokens": {
+                  "type": "number"
+                },
+                "parent_id": {
+                  "type": "string"
+                },
+                "records": {
+                  "type": "number"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "side_question": {
+                  "type": "string"
+                },
+                "started_at": {
+                  "type": "string"
+                },
+                "thoughts_tokens": {
+                  "type": "number"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "tokens": {
+                  "type": "number"
+                },
+                "usage_source": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "snapshot": {
+            "type": "string"
+          },
+          "total": {
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "status": 200
+    },
+    "sessions_search": {
+      "method": "GET",
+      "path": "/api/sessions?q=Git&format=all",
+      "schema": {
+        "fields": {
+          "count": {
+            "type": "number"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "meta": {
+            "fields": {
+              "build_count": {
+                "type": "number"
+              },
+              "build_ms": {
+                "type": "number"
+              },
+              "fields": {
+                "type": "string"
+              },
+              "fold": {
+                "type": "boolean"
+              },
+              "generation": {
+                "type": "number"
+              },
+              "has_more": {
+                "type": "boolean"
+              },
+              "limit": {
+                "type": "number"
+              },
+              "ms": {
+                "type": "number"
+              },
+              "offset": {
+                "type": "number"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "total": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "offset": {
+            "type": "number"
+          },
+          "sessions": {
+            "items": {
+              "fields": {
+                "account": {
+                  "type": "string"
+                },
+                "all_files": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "aux_tokens": {
+                  "type": "number"
+                },
+                "bytes": {
+                  "type": "number"
+                },
+                "catalog_id": {
+                  "type": "string"
+                },
+                "chat_tokens": {
+                  "type": "number"
+                },
+                "children": {
+                  "items": {
+                    "type": "any"
+                  },
+                  "type": "array"
+                },
+                "children_count": {
+                  "type": "number"
+                },
+                "content_tokens": {
+                  "type": "number"
+                },
+                "exists": {
+                  "type": "boolean"
+                },
+                "file_path": {
+                  "type": "string"
+                },
+                "format": {
+                  "type": "string"
+                },
+                "input_tokens": {
+                  "type": "number"
+                },
+                "mode": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "mtime": {
+                  "type": "number"
+                },
+                "output_tokens": {
+                  "type": "number"
+                },
+                "records": {
+                  "type": "number"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "started_at": {
+                  "type": "string"
+                },
+                "thoughts_tokens": {
+                  "type": "number"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "tokens": {
+                  "type": "number"
+                },
+                "usage_source": {
+                  "type": "string"
+                },
+                "workspace": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "snapshot": {
+            "type": "string"
+          },
+          "total": {
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "status": 200
+    },
+    "status": {
+      "method": "GET",
+      "path": "/api/status",
+      "schema": {
+        "fields": {
+          "agent_meta": {
+            "fields": {
+              "antigravity": {
+                "fields": {
+                  "badge_color": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "claude": {
+                "fields": {
+                  "badge_color": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "codex": {
+                "fields": {
+                  "badge_color": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "copilot": {
+                "fields": {
+                  "badge_color": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "cursor": {
+                "fields": {
+                  "badge_color": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "devin": {
+                "fields": {
+                  "badge_color": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "kimi": {
+                "fields": {
+                  "badge_color": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "trae": {
+                "fields": {
+                  "badge_color": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "workbuddy": {
+                "fields": {
+                  "badge_color": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
+          "export_dir": {
+            "type": "string"
+          },
+          "format_counts": {
+            "fields": {
+              "antigravity": {
+                "type": "number"
+              },
+              "claude": {
+                "type": "number"
+              },
+              "trae": {
+                "type": "number"
+              },
+              "workbuddy": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "roots": {
+            "items": {
+              "fields": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "format": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "number"
+                },
+                "last_error": {
+                  "type": "null"
+                },
+                "last_scan_status": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "supported_targets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "total_sessions": {
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "status": 200
+    }
+  },
+  "post": {
+    "/api/catalog/add_root": {
+      "keys": [
+        "format",
+        "path"
+      ],
+      "method": "POST",
+      "probe": "signature"
+    },
+    "/api/catalog/refresh": {
+      "keys": [],
+      "method": "POST",
+      "probe": "signature"
+    },
+    "/api/catalog/remove_root": {
+      "keys": [
+        "id"
+      ],
+      "method": "POST",
+      "probe": "signature"
+    },
+    "/api/open_folder": {
+      "keys": [
+        "path"
+      ],
+      "method": "POST",
+      "probe": "signature"
+    },
+    "/api/session/delete": {
+      "keys": [
+        "catalog_id",
+        "session_id",
+        "format",
+        "file_path"
+      ],
+      "method": "POST",
+      "probe": "signature"
+    },
+    "/api/session/migrate": {
+      "keys": [
+        "catalog_id",
+        "target_format",
+        "mode",
+        "custom_out_dir"
+      ],
+      "method": "POST",
+      "probe": "signature"
+    },
+    "/api/sessions/batch_delete": {
+      "keys": [
+        "sessions"
+      ],
+      "method": "POST",
+      "probe": "signature"
+    },
+    "/api/sessions/batch_migrate": {
+      "keys": [
+        "catalog_ids",
+        "target_format"
+      ],
+      "method": "POST",
+      "probe": "signature"
+    }
+  }
+}

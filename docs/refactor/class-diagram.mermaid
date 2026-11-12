@@ -1,0 +1,149 @@
+classDiagram
+    class SnapshotCache {
+        -_lock: Lock
+        -_generation: int
+        -_snapshots: OrderedDict~str, Snapshot~
+        +build_count: int
+        +MAX_SNAPSHOTS = 3
+        +MAX_AGE = 1800
+        +fingerprint(catalog_sig, roots_sig, dirs_sig, generation) str
+        +get_or_build() Snapshot
+        +invalidate() None
+        +serve(query: dict) tuple~dict, int~
+        -_paginate(snap, sort_by, order, offset, limit, fold) dict
+    }
+
+    class Snapshot {
+        +snapshot_id: str
+        +built_at: float
+        +fingerprint: str
+        +items_full: list~dict~
+        +items_lite: list~dict~
+        +fold_mask: set~str~
+        +build_ms: int
+        +slice_lite(offset, limit) list~dict~
+    }
+
+    class FieldProjector {
+        +LITE_DROP: frozenset~str~
+        +KEEP_ZERO_KEYS: frozenset~str~
+        +project(item: dict, mode: str) dict
+    }
+
+    class SessionCollector {
+        +collect_all_sessions(fmt_filter: str, search: str) list~dict~
+        +invalidate_sessions_cache() None
+    }
+
+    class DetailService {
+        -_lru: DetailLRU
+        +PARSER_VERSION: int
+        +DEFAULT_TURN_LIMIT = 8
+        +DEFAULT_MAX_BYTES = 409600
+        +TR_CAP = 1200
+        +TH_CAP = 1200
+        +PAYLOAD_OMIT_BYTES = 1500
+        +serve(handler, query: dict) None
+        +resolve_detail(catalog_id: str) ResolvedDetail
+        +slim_events(events: list, slim: bool) list
+        +slice_by_turns(events, spans, turn_offset, turn_limit, max_bytes) ShardResult
+        -_preetag(catalog_id, mtime_ns, size, shard) str
+    }
+
+    class ResolvedDetail {
+        +catalog_id: str
+        +session_id: str
+        +format: str
+        +title: str
+        +started_at: str
+        +cwd: str
+        +model: str
+        +notice: str
+        +events: list~dict~
+        +spans: list~TurnSpan~
+        +mtime_ns: int
+        +size: int
+    }
+
+    class DetailLRU {
+        -_data: OrderedDict
+        +MAX_ENTRIES = 200
+        +MAX_BYTES = 536870912
+        +estimate(events: list) int
+        +get(key: tuple) ResolvedDetail
+        +put(key: tuple, value: ResolvedDetail) None
+        +_evict() None
+    }
+
+    class TurnSpan {
+        +index: int
+        +start: int
+        +end: int
+        +user_preview: str
+        +ts: str
+    }
+
+    class TurnBoundary {
+        +TURN_BOUNDARY: str
+        +compute_turn_spans(events: list) list~TurnSpan~
+        +turn_index_of(events: list, i: int) int
+        +audit_fts_alignment(sample_size: int) dict
+    }
+
+    class ShardResult {
+        +events: list~dict~
+        +turns: list~TurnSpan~
+        +turn_offset: int
+        +turn_limit: int
+        +turns_total: int
+        +has_more_turns: bool
+        +part: int
+        +has_more_parts: bool
+    }
+
+    class ResponseWriter {
+        +not_modified(handler, etag) None
+        +send_json(handler, data, status, extra_headers) None
+        +_send_compressed(handler, body, content_type, status, extra_headers) None
+        +etag_for(seed: str) str
+    }
+
+    class Router {
+        +ROUTES_GET: dict~str, Callable~
+        +ROUTES_POST: dict~str, str~
+        +dispatch_get(handler, path, query) None
+        +not_implemented_501(handler) None
+    }
+
+    class SessionFTSManager {
+        +index_session_turns(...) None
+        +search(query: str, limit: int, catalog_id: str) dict
+        +get_stats() dict
+        +audit_against_turns() dict
+    }
+
+    class SessionListMeta {
+        +total: int
+        +offset: int
+        +limit: int
+        +has_more: bool
+        +snapshot: str
+        +ms: int
+    }
+
+    SnapshotCache "1" *-- "1..3" Snapshot : retains
+    SnapshotCache --> SessionCollector : builds via
+    SnapshotCache --> FieldProjector : projects lite
+    SnapshotCache --> SessionListMeta : embeds
+    DetailService "1" *-- "1" DetailLRU : owns
+    DetailService --> TurnBoundary : uses
+    DetailService --> FieldProjector : slim rules
+    DetailService --> SessionFTSManager : cross-check turn_index
+    DetailLRU "1" o-- "0..24" ResolvedDetail : caches
+    ResolvedDetail "1" *-- "0..*" TurnSpan : precomputed
+    DetailService ..> ShardResult : produces
+    Router --> ResponseWriter : serializes via
+    Router --> SnapshotCache : /api/sessions
+    Router --> DetailService : /api/session/detail
+    Router --> SessionFTSManager : /api/search/content
+    ResponseWriter ..> SessionListMeta : header/meta

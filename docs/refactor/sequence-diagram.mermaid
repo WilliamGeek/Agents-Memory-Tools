@@ -1,0 +1,110 @@
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant P as page.tsx (useSWRInfinite)
+    participant C as api/client.ts
+    participant RT as api/routes.py
+    participant RS as api/response.py
+    participant S as services/snapshot.py
+    participant SC as SessionCollector
+    participant D as services/detail.py
+    participant TB as services/turns.py
+    participant LRU as DetailLRU
+    participant K as catalog.sqlite3
+    participant F as dialogue_fts.sqlite3
+
+    Note over U,S: 场景 1 · 列表首屏（limit=60, fields=lite, fold=1）
+    U->>P: 打开首页
+    P->>C: getSessions({limit:60, offset:0, fold:1})
+    C->>RT: GET /api/sessions?limit=60&offset=0&fields=lite&fold=1
+    RT->>S: serve(query)
+    S->>K: SELECT COUNT(*), MAX(id), MAX(updated_at) FROM sessions
+    K-->>S: catalog_signature
+    S->>S: fingerprint = sha1(roots + catalog_sig + agDirMtimes + generation)
+    alt 指纹命中且未超 MAX_AGE
+        S->>S: 复用 snapshot（build_count 不变）
+    else 指纹变化 / 首次 / 已 invalidate
+        S->>S: acquire single-flight lock
+        S->>SC: collect_all_sessions("all", "")
+        SC->>K: SELECT sessions JOIN roots
+        K-->>SC: rows
+        SC-->>S: items_full（含 children / all_files / 逐会话 token）
+        S->>S: project_lite() + fold_mask 计算
+        S->>S: snapshot_id = sha1(fingerprint)[:12]
+        S->>S: 存入 OrderedDict，淘汰超出 3 个的旧快照
+    end
+    S->>S: sort(sort_by, order) → slice(offset, offset+limit)
+    S-->>RT: {sessions, count, meta{total,offset,limit,has_more,snapshot,ms}}
+    RT->>RS: send_json(payload)
+    RS->>RS: etag = md5(body)
+    alt If-None-Match == etag
+        RS-->>C: 304（body 0 B）
+    else
+        RS-->>C: 200 + gzip + ETag + Cache-Control
+    end
+    C-->>P: normalizeSession[] + meta
+    P->>U: 渲染 60 张卡片（39,723 B / gzip 8,101 B）
+
+    Note over U,S: 场景 2 · 滚动追加（同一 snapshot，折叠跨页一致）
+    U->>P: 滚动到底（IntersectionObserver 哨兵）
+    P->>C: getSessions({limit:60, offset:60, snapshot:"ab12cd34ef56"})
+    C->>RT: GET /api/sessions?limit=60&offset=60&snapshot=ab12cd34ef56
+    RT->>S: serve(query)
+    S->>S: snapshot 仍存活 → 纯切片（无重算）
+    S-->>P: 追加 60 条
+
+    Note over U,D: 场景 3 · 检索命中第 87 轮 → 打开详情（1 次请求命中）
+    U->>P: 点击全局检索结果（catalog_id, turn_index=87）
+    P->>C: getSessionDetail(cid, {turn_offset:85, turn_limit:5, slim:1})
+    C->>RT: GET /api/session/detail?catalog_id=..&turn_offset=85&turn_limit=5&slim=1
+    RT->>D: serve(handler, query)
+    D->>D: preetag = sha1(cid|mtime_ns|size|PARSER_VERSION|85|5|slim|max_bytes|part)
+    alt If-None-Match == preetag
+        D-->>RT: 304（未打开任何文件）
+    else 未命中
+        D->>LRU: get((cid, mtime_ns, size, PARSER_VERSION))
+        alt LRU 命中
+            LRU-->>D: ResolvedDetail（events + spans）
+        else LRU 未命中
+            D->>D: load_session + _enrich + sanitize → events
+            D->>TB: compute_turn_spans(events)
+            TB-->>D: [{index,start,end}, ...]（同文件必然一致）
+            D->>LRU: put(key, ResolvedDetail)
+        end
+        D->>D: slim_events(opaque 丢弃 / text 截 1200 / payload >1500B 折叠)
+        D->>D: slice_by_turns(85..89) + max_bytes 预算切 part
+        D-->>RT: {events, turns, turns_total, has_more_turns, part, events_count(全量)}
+        RT->>RS: send_json + ETag
+        RS-->>C: 200
+    end
+    C-->>P: SessionDetail（分片）
+    P->>P: buildTurns(已加载 events)，按 turns[i].index 对齐绝对轮号
+    P->>U: scrollIntoView(#turn-87) + 高亮命中
+
+    Note over U,D: 场景 4 · 展开原始输出（单事件回源）
+    U->>P: 点击「展开原始内容」
+    P->>C: getSessionEvent(cid, index=4721)
+    C->>RT: GET /api/session/event?catalog_id=..&index=4721&field=both
+    RT->>LRU: get(key)
+    LRU-->>RT: events（未裁剪）
+    RT-->>C: {index, kind, text(全文), payload, bytes}
+    P->>U: 该条替换为完整文本（hidden_chars 归零）
+
+    Note over U,D: 场景 5 · 详情内检索（改走后端 FTS，限定 catalog_id）
+    U->>P: 在详情内输入关键词
+    P->>C: searchContent(q, {catalogId: cid})
+    C->>RT: GET /api/search/content?q=..&catalog_id=..
+    RT->>F: MATCH ... AND catalog_id = ?
+    F-->>RT: [{turn_index, snippet}]
+    RT-->>P: 命中轮号集合
+    P->>P: 若命中轮不在已加载窗口 → 1 次 detail 请求按需加载该窗口
+    P->>U: 高亮 + 轮次跳转条（范围明示）
+
+    Note over U,RT: 场景 6 · 数据变更后的失效
+    U->>RT: POST /api/sessions/batch_delete
+    RT->>RT: 执行删除
+    RT->>S: invalidate_sessions_cache()（generation += 1）
+    RT->>F: 移除索引
+    RT-->>U: {success:true, deleted_count, total_freed_bytes}
+    P->>P: bumpDataVersion() → SWR key 变化
+    P->>C: 重新请求列表（指纹已变 → 重建一次，build_count += 1）

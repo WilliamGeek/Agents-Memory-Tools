@@ -108,16 +108,23 @@ python -m venv .venv
 # 3. Install dependencies
 pip install -r requirements.txt
 # Or manually install core packages:
-pip install session-migrate tiktoken tokenizers bottle
+pip install session-migrate tiktoken tokenizers
 
-# 4. Launch web dashboard
+# 4. Build frontend workbench (Node.js 20+, exported to frontend/out)
+cd frontend
+npm install
+npm run build
+cd ..
+
+# 5. Launch unified dashboard (single-port service)
 python web_app.py
 ```
 
 Once running, navigate to `http://127.0.0.1:18922` in your browser.
+The Python server directly hosts the modern React workbench static export alongside high-performance REST APIs on the same port, eliminating external Node.js daemon processes or proxy configurations. If the static export is absent, it gracefully falls back to the built-in console.
 
 > 💡 **Windows Shortcuts**:
-> - `启动Memory Tools.cmd`: Interactive terminal launch
+> - `启动Memory Tools.cmd`: Interactive launch (builds frontend automatically if missing)
 > - `后台静默启动Memory Tools.vbs`: Headless background daemon
 > - `停止Memory Tools.cmd`: Graceful termination of port 18922 processes
 
