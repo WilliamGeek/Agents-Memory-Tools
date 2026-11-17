@@ -4516,7 +4516,7 @@ HTML_PAGE = """<!DOCTYPE html>
       input.focus();
     }
 
-    async function openChatModal(cid, targetTurnIndex = null) {
+    async function openChatModal(cid, targetTurnIndex = null, refreshAttempt = 0) {
       const sess = allSessions.find(s =>
         s.catalog_id === cid ||
         s.session_id === cid ||
@@ -4594,6 +4594,18 @@ HTML_PAGE = """<!DOCTYPE html>
           return;
         }
       }
+      const cloudRefreshNotice = data.refresh_pending
+        ? `<div class="detail-notice" style="color:#fbbf24; border-color:rgba(251,191,36,.35);">云端正文正在同步，页面会自动刷新…</div>`
+        : '';
+      const scheduleCloudRefresh = () => {
+        if (!data.refresh_pending || refreshAttempt >= 8) return;
+        setTimeout(() => {
+          const modal = document.getElementById('chatModal');
+          if (!modal || !modal.classList.contains('open')) return;
+          sessionDetailCache.delete(effectiveCid);
+          openChatModal(effectiveCid, targetTurnIndex, refreshAttempt + 1);
+        }, 3000);
+      };
       try {
         if (data.error) {
           body.innerHTML = `<div style="color: var(--accent-rose); padding: 20px;">${data.error}</div>`;
@@ -4605,7 +4617,9 @@ HTML_PAGE = """<!DOCTYPE html>
           ? `<div class="detail-notice">⚠️ ${escapeHtml(data.notice)}</div>`
           : '';
         if (events.length === 0) {
-          body.innerHTML = detailNotice || '<div style="text-align: center; padding: 40px; color: var(--text-muted);">该会话为内部配置或暂无结构化消息文本</div>';
+          body.innerHTML = (cloudRefreshNotice || '') + (detailNotice || '') ||
+            '<div style="text-align: center; padding: 40px; color: var(--text-muted);">该会话为内部配置或暂无结构化消息文本</div>';
+          scheduleCloudRefresh();
           return;
         }
 
@@ -4662,7 +4676,8 @@ HTML_PAGE = """<!DOCTYPE html>
           return `<div class="turn-block" id="turn-block-${turn.userNumber}">${userHtml}${tracksWrapper}</div>`;
         }).join('');
 
-        body.innerHTML = detailNotice + '<div class="chat-stream">' + turnsHtml + '</div>';
+        body.innerHTML = cloudRefreshNotice + detailNotice + '<div class="chat-stream">' + turnsHtml + '</div>';
+        scheduleCloudRefresh();
 
         // 收集所有用户指令卡片供上下快速跳转
         userMsgElements = Array.from(document.querySelectorAll('#chatStreamBody .user-bubble-anchor'));

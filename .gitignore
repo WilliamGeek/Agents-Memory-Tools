@@ -34,3 +34,13 @@ _big.json
 _s.json
 _tmp*.json
 frontend/_*.log
+
+# 豆包云端会话同步产物（含登录 Cookie 缓存，禁止入库）
+cache/doubao_cloud/
+
+# 本地运行时数据、备份、日志与解密产物
+cache/
+backup/
+logs/
+tools/dbkey/
+dbg.py

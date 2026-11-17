@@ -13,6 +13,8 @@ const FILTERS: AgentFormatType[] = [
   'claude',
   'workbuddy',
   'trae',
+  'doubao',
+  'codex',
   'cursor',
   'copilot',
 ];
@@ -33,12 +35,14 @@ export function Toolbar({
   totalBytes,
   totalTokens,
   formatCounts,
+  countsPending = false,
 }: {
   totalSessions: number;
   matchCount: number;
   totalBytes: number;
   totalTokens: number;
   formatCounts: Record<string, number>;
+  countsPending?: boolean;
 }) {
   const {
     activeFilter,
@@ -52,6 +56,23 @@ export function Toolbar({
     foldLineage,
     toggleFoldLineage,
   } = useStore();
+
+  const chipsRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    const el = chipsRef.current;
+    if (!el) return;
+    const handleWheel = (event: WheelEvent) => {
+      // 只接管纵向滚轮；触控板的横向滑动交给浏览器原生滚动
+      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      if (el.scrollWidth <= el.clientWidth) return;
+      event.preventDefault();
+      const step = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+      el.scrollLeft += step;
+    };
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, []);
 
   return (
     <section className="bg-surface border border-line rounded-card shadow-card px-3 py-2 flex flex-wrap items-center gap-2">
@@ -78,8 +99,11 @@ export function Toolbar({
         )}
       </div>
 
-      {/* 平台筛选 chips：单行横滚，保持工具栏与旧版相同的高度 */}
-      <div className="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1 min-w-0 py-0.5">
+      {/* 平台筛选 chips：单行横向滚动；滚轮停在筛选条上时，把纵向滚动转成横向移动 */}
+      <div
+        ref={chipsRef}
+        className="flex items-center gap-1 overflow-x-auto no-scrollbar overscroll-x-contain flex-1 min-w-0 py-0.5"
+      >
         {FILTERS.map((f) => {
           const active = activeFilter === f;
           const meta = f === 'all' ? null : platformMeta(f);
@@ -100,7 +124,7 @@ export function Toolbar({
               )}
               <span>{f === 'all' ? '全部' : meta!.label}</span>
               <span className={`tnum text-[10.5px] ${active ? 'text-accent' : 'text-ink-faint'}`}>
-                {count}
+                {countsPending ? '—' : count}
               </span>
             </button>
           );
@@ -145,10 +169,16 @@ export function Toolbar({
           className="hidden xl:flex items-center gap-1 pl-1 text-[11px] text-ink-muted tnum whitespace-nowrap"
           title="当前匹配的会话统计"
         >
-          总收录 <strong className="text-ink font-medium">{formatCount(totalSessions)}</strong> · 匹配{' '}
-          <strong className="text-ink font-medium">{formatCount(matchCount)}</strong> 篇 ·{' '}
-          {formatBytes(totalBytes)} ·{' '}
-          <strong className="text-accent-ink font-medium">{formatTokens(totalTokens)} Tokens</strong>
+          {countsPending ? (
+            <span>统计加载中…</span>
+          ) : (
+            <>
+              总收录 <strong className="text-ink font-medium">{formatCount(totalSessions)}</strong> · 匹配{' '}
+              <strong className="text-ink font-medium">{formatCount(matchCount)}</strong> 篇 ·{' '}
+              {formatBytes(totalBytes)} ·{' '}
+              <strong className="text-accent-ink font-medium">{formatTokens(totalTokens)} Tokens</strong>
+            </>
+          )}
         </div>
       </div>
     </section>

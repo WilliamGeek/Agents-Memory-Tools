@@ -14,7 +14,7 @@ import { MigrateModal } from '../components/modals/MigrateModal';
 import { BatchManagementDrawer } from '../components/batch/BatchManagementDrawer';
 import { api } from '../api/client';
 import { useStore } from '../store/useStore';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Inbox } from 'lucide-react';
 import { SessionListResponse, SessionItem } from '../types/session';
 
 /** 首屏条数：与后端 limit=60 的字节预算对齐（实测约 39.7 KB） */
@@ -85,7 +85,7 @@ export default function WorkspacePage() {
     [query, activeFilter, sortField, sortOrder, foldLineage, dataVersion]
   );
 
-  const { data: pages, size, setSize, isValidating, mutate } = useSWRInfinite<SessionListResponse>(
+  const { data: pages, size, setSize, isValidating, mutate, error: listError } = useSWRInfinite<SessionListResponse>(
     getKey,
     fetchPage,
     {
@@ -96,11 +96,17 @@ export default function WorkspacePage() {
       parallel: false,
       dedupingInterval: 2000,
       keepPreviousData: true,
+      shouldRetryOnError: true,
+      errorRetryInterval: 3000,
+      errorRetryCount: 3,
     }
   );
 
-  const { data: status, mutate: mutateStatus } = useSWR('/api/status', () => api.getStatus(), {
+  const { data: status, mutate: mutateStatus, error: statusError } = useSWR('/api/status', () => api.getStatus(), {
     revalidateOnFocus: false,
+    shouldRetryOnError: true,
+    errorRetryInterval: 3000,
+    errorRetryCount: 3,
   });
 
   const refreshAll = useCallback(() => {
@@ -116,12 +122,17 @@ export default function WorkspacePage() {
 
   /** 服务端给的匹配总数（无 meta 的后端回落为已加载条数，与改造前一致） */
   const serverTotal = pageList.length > 0 ? pageList[0].total : 0;
+  /** 服务端按当前过滤条件算的全量统计，不能只按已加载页累加 */
+  const serverStats = pageList.length > 0 ? pageList[0].stats : undefined;
   const lastPage = pageList.length > 0 ? pageList[pageList.length - 1] : null;
   const hasMore = Boolean(lastPage?.hasMore);
   // 后端返回了空页但声称还有下一页时不自动续拉，避免空转
   const lastPageEmpty = Boolean(lastPage && (lastPage.sessions || []).length === 0);
   const isLoadingMore = isValidating && sessions.length > 0;
   const isFirstLoading = !pages && isValidating;
+  /** 请求失败且没有任何已加载数据：显示错误卡片，而不是伪造“0 个会话” */
+  const listFailed = Boolean(listError) && sessions.length === 0;
+  const listErrorText = listError instanceof Error ? listError.message : '无法连接到本地服务'
 
   const locallyFoldedOut = useMemo(() => {
     // 子代理会话永久收进父卡片的「子会话」抽屉，不单独占一张卡片
@@ -148,6 +159,9 @@ export default function WorkspacePage() {
   }, [sessions, query, foldLineage]);
 
   const stats = useMemo(() => {
+    if (!query && serverStats) {
+      return { bytes: serverStats.bytes || 0, tokens: serverStats.tokens || 0 };
+    }
     let bytes = 0;
     let tokens = 0;
     for (const s of filtered) {
@@ -155,7 +169,7 @@ export default function WorkspacePage() {
       tokens += s.tokens || 0;
     }
     return { bytes, tokens };
-  }, [filtered]);
+  }, [filtered, query, serverStats]);
 
   const sentinelRef = useRef<HTMLDivElement>(null);
 
@@ -197,6 +211,7 @@ export default function WorkspacePage() {
           totalBytes={stats.bytes}
           totalTokens={stats.tokens}
           formatCounts={status?.formatCounts || {}}
+          countsPending={Boolean(statusError) || listFailed}
         />
         {isScanning && (
           <div className="flex items-center gap-2 px-3.5 py-2 rounded-md border border-accent/30 bg-accent-soft text-[12px] text-accent-ink">
@@ -205,14 +220,38 @@ export default function WorkspacePage() {
           </div>
         )}
 
-        <div className={isScanning ? 'pointer-events-none opacity-60 transition-opacity' : 'transition-opacity'}>
-          <SessionGrid
-            sessions={filtered}
-            isLoading={isFirstLoading && sessions.length === 0}
-            onChanged={refreshAll}
-            hasQuery={Boolean(searchQuery.trim())}
-          />
-        </div>
+        {statusError && !listFailed && (
+          <div className="flex items-center gap-2 px-3.5 py-2 rounded-md border border-line bg-surface text-[12px] text-ink-muted">
+            <Loader2 size={13} className="animate-spin" />
+            统计信息加载失败，正在自动重试；会话列表不受影响。
+          </div>
+        )}
+
+        {listFailed ? (
+          <div className="py-16 border border-dashed border-line-strong rounded-card bg-surface flex flex-col items-center justify-center text-center px-6">
+            <span className="w-11 h-11 rounded-full bg-surface-sunken border border-line flex items-center justify-center text-ink-faint mb-3">
+              <Inbox size={19} />
+            </span>
+            <h3 className="text-[14px] font-medium text-ink">会话列表加载失败</h3>
+            <p className="text-[12.5px] text-ink-muted mt-1.5 max-w-md leading-relaxed">{listErrorText}</p>
+            <button
+              type="button"
+              onClick={refreshAll}
+              className="mt-4 px-3.5 py-1.5 rounded-md border border-line-strong bg-surface-sunken text-[12.5px] text-ink hover:bg-surface transition-colors"
+            >
+              重新加载
+            </button>
+          </div>
+        ) : (
+          <div className={isScanning ? 'pointer-events-none opacity-60 transition-opacity' : 'transition-opacity'}>
+            <SessionGrid
+              sessions={filtered}
+              isLoading={isFirstLoading && sessions.length === 0}
+              onChanged={refreshAll}
+              hasQuery={Boolean(searchQuery.trim())}
+            />
+          </div>
+        )}
 
         {/* 续拉哨兵 + 加载态：只在还有下一页时出现，不参与网格布局 */}
         {hasMore && (

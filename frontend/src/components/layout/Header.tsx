@@ -58,10 +58,10 @@ export function Header({ onRefresh }: { onRefresh?: () => void }) {
           <button
             onClick={() => setIsGlobalSearchOpen(true)}
             className={ghostBtn}
-            title="跨会话对话内容全文检索（Ctrl+Shift+F）"
+            title="跨会话检索会话标题与消息内容（Ctrl+Shift+F）"
           >
             <Search size={13} className="text-ink-muted" />
-            <span className="hidden sm:inline">全文检索</span>
+            <span className="hidden sm:inline">检索</span>
             <kbd className="hidden md:inline-block ml-0.5 px-1.5 py-0.5 rounded border border-line bg-surface-sunken text-[10px] text-ink-faint">
               Ctrl+Shift+F
             </kbd>

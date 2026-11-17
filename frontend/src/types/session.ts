@@ -6,6 +6,7 @@ export type AgentFormatType =
   | 'claude'
   | 'workbuddy'
   | 'trae'
+  | 'doubao'
   | 'cursor'
   | 'copilot'
   | 'codex'
@@ -121,6 +122,10 @@ export interface SessionDetail {
   hasMoreTurns: boolean;
   /** 下一页的起始轮号（服务端给；0 表示没有下一页） */
   nextTurnOffset: number;
+  /** 豆包云端详情：后台是否正在拉取最新正文 */
+  refreshPending?: boolean;
+  /** 豆包云端详情对应的完整会话 ID / 云端链接 */
+  cloudLink?: string;
   /** 本次响应覆盖的轮次边界列表 */
   turns: SessionTurnSpan[];
   /**
@@ -168,6 +173,8 @@ export interface SearchResultItem {
   sessionTitle: string;
   sessionFormat: string;
   role: string;
+  /** 事件分类（message / tool_call / thinking…）；旧后端可能不返回 */
+  kind?: string;
   turnIndex: number;
   timestamp: string;
   snippet: string;
@@ -201,4 +208,9 @@ export interface SessionListResponse extends SessionListMeta {
   sessions: SessionItem[];
   /** 本页条数（旧语义，与后端 count 一致） */
   count: number;
+  /** 当前查询/平台过滤下的全量统计；旧后端可能缺省 */
+  stats?: {
+    bytes: number;
+    tokens: number;
+  };
 }

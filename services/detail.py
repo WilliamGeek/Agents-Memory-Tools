@@ -39,7 +39,7 @@ from . import turns as turns_service
 
 #: 解析器版本：`sanitize_session_events` / `_enrich_session_events_for_detail`
 #: 语义一改就 +1，LRU 自动全量失效
-PARSER_VERSION = 2
+PARSER_VERSION = 3
 
 #: 与前端 `ClampedText` 默认值一致的裁剪点（裁剪点落在用户本就看不到的位置）
 TR_CAP = 1200
@@ -491,7 +491,14 @@ def load_cached(probe: dict[str, Any], loader: Callable[[], dict[str, Any]]) -> 
         if cached is not None:
             return cached
     payload = loader()
+    # 所有平台的统一回复语义：同一用户轮内，除最后一条 assistant message
+    # 外都只是过程说明，不能渲染成“回复”。在解析结果入缓存前做一次，
+    # 分片、全量、事件回源和旧版 UI 都会看到同一份结果。
+    turns_service.demote_intermediate_assistant_messages(
+        payload.get("events") or []
+    )
     if mtime_ns:
+
         DETAIL_CACHE.put(
             (catalog_id, mtime_ns, size, PARSER_VERSION),
             payload,
@@ -556,6 +563,9 @@ def serve(
         return
 
     response = _compose(payload, sharded, turn_offset, turn_limit, slim, max_bytes)
+    # probe 可以携带轻量响应元信息（例如豆包云端按需刷新的 refresh_pending /
+    # cloud_link），不参与解析缓存键，也不影响 304 的 ETag。
+    response.update(probe.get("response_extra") or {})
     response["elapsed_ms"] = round((time.perf_counter() - started) * 1000.0, 2)
     handler.send_json(response, etag=etag)
 

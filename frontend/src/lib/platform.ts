@@ -9,6 +9,7 @@ const MAP: Record<string, PlatformMeta> = {
   claude: { label: 'Claude Code', short: 'CC', color: '#c2710c' },
   workbuddy: { label: 'WorkBuddy', short: 'WB', color: '#0f9d58' },
   trae: { label: 'Trae', short: 'TR', color: '#7c3aed' },
+  doubao: { label: '豆包', short: 'DB', color: '#2563eb' },
   cursor: { label: 'Cursor', short: 'CU', color: '#0891b2' },
   copilot: { label: 'GitHub Copilot', short: 'CP', color: '#475569' },
   codex: { label: 'Codex', short: 'CX', color: '#0f766e' },

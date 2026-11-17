@@ -58,6 +58,9 @@ GET_ENDPOINTS: list[dict[str, str]] = [
     {"id": "status", "path": "/api/status"},
     {"id": "sessions_all", "path": "/api/sessions"},
     {"id": "sessions_format_antigravity", "path": "/api/sessions?format=antigravity"},
+    # Trae 行独有 account/all_files/mode/model/workspace 等字段；用 format 过滤
+    # 显式覆盖，避免 sessions_search 的采样集合随数据/标题变化而丢失这些键。
+    {"id": "sessions_format_trae", "path": "/api/sessions?format=trae"},
     {"id": "sessions_search", "path": "/api/sessions?q=Git&format=all"},
     {"id": "session_detail", "path": f"/api/session/detail?catalog_id={DETAIL_CID}"},
     {"id": "session_inspect", "path": f"/api/session/inspect?catalog_id={DETAIL_CID}"},

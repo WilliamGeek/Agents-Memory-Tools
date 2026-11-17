@@ -314,14 +314,11 @@ textarea:focus-visible {
   padding: 0 1px;
   outline: 1px solid rgb(var(--warn-rgb) / 0.35);
 }
-
-/* 详情内搜索命中 */
-.chat-hit {
-  background: rgb(var(--warn-soft-rgb));
-  color: rgb(var(--warn-rgb));
-  border-radius: 2px;
-  padding: 0 1px;
-  outline: 1px solid rgb(var(--warn-rgb) / 0.35);
+.chat-hit.chat-hit-active {
+  background: rgb(var(--warn-rgb));
+  color: #fff;
+  outline: 2px solid rgb(var(--warn-rgb));
+  box-shadow: 0 0 0 2px rgb(var(--warn-rgb) / 0.25);
 }
 
 /* Markdown 表格（GFM）*/
@@ -453,4 +450,10 @@ textarea:focus-visible {
   background: rgba(253, 224, 71, 0.35);
   color: #fff;
   outline-color: rgba(253, 224, 71, 0.5);
+}
+.md-body-inverse mark.chat-hit.chat-hit-active {
+  background: #fde047;
+  color: #111827;
+  outline: 2px solid #fff;
+  box-shadow: 0 0 0 2px rgba(253, 224, 71, 0.45);
 }

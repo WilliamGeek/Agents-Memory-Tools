@@ -113,6 +113,44 @@ def turns_total(events: list[dict[str, Any]]) -> int:
     return len(compute_turn_spans(events))
 
 
+def demote_intermediate_assistant_messages(events: list[dict[str, Any]]) -> int:
+    """同一轮内只保留最后一条 assistant message 为回复。
+
+    许多 Agent（豆包、Antigravity、WorkBuddy、Trae、Codex）会把
+    “我先定位…”“验证发现…”这类过程说明也写成 assistant message；
+    如果全部渲染成回复，就会出现“一份用户指令对应多条回复”。
+    这里按用户轮边界分组，把每组里除最后一条外的 assistant message
+    改成 thinking，返回被改写的条数。
+    """
+    if not events:
+        return 0
+    boundaries = boundary_indices(events)
+    if not boundaries:
+        starts = [0]
+        ends = [len(events)]
+    else:
+        starts = [0] + boundaries[1:]
+        ends = boundaries[1:] + [len(events)]
+
+    changed = 0
+    for start, end in zip(starts, ends):
+        reply_indices = [
+            i
+            for i in range(start, end)
+            if isinstance(events[i], dict)
+            and events[i].get("kind") == "message"
+            and events[i].get("role") == "assistant"
+            and str(events[i].get("text") or "").strip()
+        ]
+        if len(reply_indices) <= 1:
+            continue
+        for i in reply_indices[:-1]:
+            events[i]["kind"] = "thinking"
+            events[i]["role"] = "assistant"
+            changed += 1
+    return changed
+
+
 def slice_events_by_turns(
     events: list[dict[str, Any]],
     spans: list[dict[str, Any]],

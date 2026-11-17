@@ -1,6 +1,6 @@
 {
   "base": "http://127.0.0.1:18923",
-  "captured_at": "2026-11-12T01:48:55",
+  "captured_at": "2026-11-14T18:27:45",
   "detail_cid": "1eaa5a8745ff40cb",
   "get": {
     "search_content": {
@@ -65,11 +65,17 @@
       "path": "/api/session/detail?catalog_id=1eaa5a8745ff40cb",
       "schema": {
         "fields": {
+          "agent_name": {
+            "type": "string"
+          },
           "cli_version": {
             "type": "string"
           },
           "cwd": {
             "type": "null"
+          },
+          "elapsed_ms": {
+            "type": "number"
           },
           "events": {
             "items": {
@@ -111,20 +117,97 @@
           "events_count": {
             "type": "number"
           },
+          "events_shipped": {
+            "type": "number"
+          },
+          "events_total_raw": {
+            "type": "number"
+          },
           "format": {
             "type": "string"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "is_child": {
+            "type": "boolean"
           },
           "model": {
             "type": "null"
           },
+          "next_turn_offset": {
+            "type": "number"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "parent_catalog_id": {
+            "type": "string"
+          },
+          "parent_id": {
+            "type": "string"
+          },
+          "parent_title": {
+            "type": "string"
+          },
           "session_id": {
             "type": "string"
+          },
+          "slim": {
+            "type": "number"
           },
           "started_at": {
             "type": "string"
           },
           "title": {
             "type": "string"
+          },
+          "turn_index": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "turn_limit": {
+            "type": "number"
+          },
+          "turn_offset": {
+            "type": "number"
+          },
+          "turns": {
+            "items": {
+              "fields": {
+                "end": {
+                  "type": "number"
+                },
+                "events_count": {
+                  "type": "number"
+                },
+                "index": {
+                  "type": "number"
+                },
+                "raw_end": {
+                  "type": "number"
+                },
+                "raw_start": {
+                  "type": "number"
+                },
+                "start": {
+                  "type": "number"
+                },
+                "timestamp": {
+                  "type": "string"
+                },
+                "user_preview": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "turns_total": {
+            "type": "number"
           }
         },
         "type": "object"
@@ -195,11 +278,67 @@
           "count": {
             "type": "number"
           },
+          "has_more": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "meta": {
+            "fields": {
+              "count": {
+                "type": "number"
+              },
+              "fields": {
+                "type": "string"
+              },
+              "fold": {
+                "type": "boolean"
+              },
+              "generation": {
+                "type": "number"
+              },
+              "has_more": {
+                "type": "boolean"
+              },
+              "limit": {
+                "type": "number"
+              },
+              "offset": {
+                "type": "number"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "total": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "offset": {
+            "type": "number"
+          },
           "sessions": {
             "items": {
               "fields": {
+                "account": {
+                  "type": "string"
+                },
+                "agent_name": {
+                  "type": "string"
+                },
+                "all_files": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
                 "aux_tokens": {
                   "type": "number"
+                },
+                "branch_label": {
+                  "type": "string"
                 },
                 "bytes": {
                   "type": "number"
@@ -234,16 +373,58 @@
                 "input_tokens": {
                   "type": "number"
                 },
+                "is_child": {
+                  "type": "boolean"
+                },
+                "is_lineage_branch": {
+                  "type": "boolean"
+                },
+                "lineage": {
+                  "type": "string"
+                },
+                "lineage_head_id": {
+                  "type": "string"
+                },
+                "lineage_head_steps": {
+                  "type": "number"
+                },
+                "lineage_head_title": {
+                  "type": "string"
+                },
+                "lineage_size": {
+                  "type": "number"
+                },
+                "mode": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                },
                 "mtime": {
+                  "type": "number"
+                },
+                "nesting_depth": {
                   "type": "number"
                 },
                 "output_tokens": {
                   "type": "number"
                 },
+                "parent_catalog_id": {
+                  "type": "string"
+                },
+                "parent_id": {
+                  "type": "string"
+                },
+                "parent_title": {
+                  "type": "string"
+                },
                 "records": {
                   "type": "number"
                 },
                 "session_id": {
+                  "type": "string"
+                },
+                "side_question": {
                   "type": "string"
                 },
                 "started_at": {
@@ -260,11 +441,20 @@
                 },
                 "usage_source": {
                   "type": "string"
+                },
+                "workspace": {
+                  "type": "string"
                 }
               },
               "type": "object"
             },
             "type": "array"
+          },
+          "snapshot": {
+            "type": "string"
+          },
+          "total": {
+            "type": "number"
           }
         },
         "type": "object"
@@ -277,6 +467,47 @@
       "schema": {
         "fields": {
           "count": {
+            "type": "number"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "meta": {
+            "fields": {
+              "count": {
+                "type": "number"
+              },
+              "fields": {
+                "type": "string"
+              },
+              "fold": {
+                "type": "boolean"
+              },
+              "generation": {
+                "type": "number"
+              },
+              "has_more": {
+                "type": "boolean"
+              },
+              "limit": {
+                "type": "number"
+              },
+              "offset": {
+                "type": "number"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "total": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "offset": {
             "type": "number"
           },
           "sessions": {
@@ -304,8 +535,8 @@
                   "items": {
                     "type": "mixed",
                     "types": [
-                      "any",
-                      "mixed"
+                      "mixed",
+                      "object"
                     ]
                   },
                   "type": "array"
@@ -327,6 +558,9 @@
                 },
                 "input_tokens": {
                   "type": "number"
+                },
+                "is_child": {
+                  "type": "boolean"
                 },
                 "is_lineage_branch": {
                   "type": "boolean"
@@ -355,7 +589,13 @@
                 "output_tokens": {
                   "type": "number"
                 },
+                "parent_catalog_id": {
+                  "type": "string"
+                },
                 "parent_id": {
+                  "type": "string"
+                },
+                "parent_title": {
                   "type": "string"
                 },
                 "records": {
@@ -386,18 +626,65 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "snapshot": {
+            "type": "string"
+          },
+          "total": {
+            "type": "number"
           }
         },
         "type": "object"
       },
       "status": 200
     },
-    "sessions_search": {
+    "sessions_format_trae": {
       "method": "GET",
-      "path": "/api/sessions?q=Git&format=all",
+      "path": "/api/sessions?format=trae",
       "schema": {
         "fields": {
           "count": {
+            "type": "number"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "meta": {
+            "fields": {
+              "count": {
+                "type": "number"
+              },
+              "fields": {
+                "type": "string"
+              },
+              "fold": {
+                "type": "boolean"
+              },
+              "generation": {
+                "type": "number"
+              },
+              "has_more": {
+                "type": "boolean"
+              },
+              "limit": {
+                "type": "number"
+              },
+              "offset": {
+                "type": "number"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "total": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "offset": {
             "type": "number"
           },
           "sessions": {
@@ -488,6 +775,176 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "snapshot": {
+            "type": "string"
+          },
+          "total": {
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "status": 200
+    },
+    "sessions_search": {
+      "method": "GET",
+      "path": "/api/sessions?q=Git&format=all",
+      "schema": {
+        "fields": {
+          "count": {
+            "type": "number"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "meta": {
+            "fields": {
+              "count": {
+                "type": "number"
+              },
+              "fields": {
+                "type": "string"
+              },
+              "fold": {
+                "type": "boolean"
+              },
+              "generation": {
+                "type": "number"
+              },
+              "has_more": {
+                "type": "boolean"
+              },
+              "limit": {
+                "type": "number"
+              },
+              "offset": {
+                "type": "number"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "total": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "offset": {
+            "type": "number"
+          },
+          "sessions": {
+            "items": {
+              "fields": {
+                "agent_name": {
+                  "type": "string"
+                },
+                "aux_tokens": {
+                  "type": "number"
+                },
+                "branch_label": {
+                  "type": "string"
+                },
+                "bytes": {
+                  "type": "number"
+                },
+                "catalog_id": {
+                  "type": "string"
+                },
+                "chat_tokens": {
+                  "type": "number"
+                },
+                "children": {
+                  "items": {
+                    "type": "any"
+                  },
+                  "type": "array"
+                },
+                "children_count": {
+                  "type": "number"
+                },
+                "content_tokens": {
+                  "type": "number"
+                },
+                "exists": {
+                  "type": "boolean"
+                },
+                "file_path": {
+                  "type": "string"
+                },
+                "format": {
+                  "type": "string"
+                },
+                "input_tokens": {
+                  "type": "number"
+                },
+                "is_lineage_branch": {
+                  "type": "boolean"
+                },
+                "lineage": {
+                  "type": "string"
+                },
+                "lineage_head_id": {
+                  "type": "string"
+                },
+                "lineage_head_steps": {
+                  "type": "number"
+                },
+                "lineage_head_title": {
+                  "type": "string"
+                },
+                "lineage_size": {
+                  "type": "number"
+                },
+                "mtime": {
+                  "type": "number"
+                },
+                "nesting_depth": {
+                  "type": "number"
+                },
+                "output_tokens": {
+                  "type": "number"
+                },
+                "parent_id": {
+                  "type": "string"
+                },
+                "records": {
+                  "type": "number"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "side_question": {
+                  "type": "string"
+                },
+                "started_at": {
+                  "type": "string"
+                },
+                "thoughts_tokens": {
+                  "type": "number"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "tokens": {
+                  "type": "number"
+                },
+                "usage_source": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "snapshot": {
+            "type": "string"
+          },
+          "total": {
+            "type": "number"
           }
         },
         "type": "object"
@@ -666,6 +1123,9 @@
                 "type": "number"
               },
               "claude": {
+                "type": "number"
+              },
+              "codex": {
                 "type": "number"
               },
               "trae": {

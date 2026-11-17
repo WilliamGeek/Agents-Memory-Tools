@@ -23,10 +23,13 @@
 """
 from __future__ import annotations
 
+import gzip
 import hashlib
+import json
 import threading
 import time
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any, Callable
 
 from . import fields as fields_service
@@ -86,17 +89,83 @@ class SnapshotCache:
         fingerprint: Callable[[], str],
         max_snapshots: int = MAX_SNAPSHOTS,
         max_age: float = MAX_AGE_SECONDS,
+        persist_path: Path | None = None,
     ) -> None:
         self._builder = builder
         self._fingerprint = fingerprint
         self._max_snapshots = max_snapshots
         self._max_age = max_age
+        self._persist_path = persist_path
+        self._seeded = False
+        self._bg_building = False
         self._lock = threading.Lock()
         self._build_lock = threading.Lock()
         self._snapshots: OrderedDict[str, Snapshot] = OrderedDict()
         self._current_id: str | None = None
         self._generation = 0
         self.build_count = 0
+        self._seed_from_disk()
+
+    # ---------------- 落盘 / 预热 ----------------
+    def _seed_from_disk(self) -> None:
+        """启动时直接载入上次快照：先让首屏有数据，再后台校验指纹。"""
+        if self._seeded:
+            return
+        self._seeded = True
+        if not self._persist_path or not self._persist_path.exists():
+            return
+        try:
+            raw = gzip.decompress(self._persist_path.read_bytes()).decode("utf-8")
+            data = json.loads(raw)
+            items = data.get("items") or []
+            if not isinstance(items, list) or not items:
+                return
+            sid = str(data.get("snapshot_id") or "seed")
+            fingerprint = str(data.get("fingerprint") or "")
+            snap = Snapshot(sid, fingerprint, int(data.get("generation") or 0), items,
+                            float(data.get("build_ms") or 0.0))
+            with self._lock:
+                self._snapshots[sid] = snap
+                self._current_id = sid
+        except Exception:
+            return
+
+    def _persist(self, snapshot: Snapshot) -> None:
+        if not self._persist_path:
+            return
+        try:
+            self._persist_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "snapshot_id": snapshot.snapshot_id,
+                "fingerprint": snapshot.fingerprint,
+                "generation": snapshot.generation,
+                "build_ms": snapshot.build_ms,
+                "items": snapshot.items_full,
+            }
+            tmp = self._persist_path.with_suffix(".tmp")
+            tmp.write_bytes(gzip.compress(json.dumps(payload, ensure_ascii=False).encode("utf-8"), 6))
+            tmp.replace(self._persist_path)
+        except Exception:
+            pass
+
+    def _refresh_async(self) -> None:
+        """后台重建：不阻塞当前请求，single-flight 只跑一份。"""
+        with self._lock:
+            if self._bg_building:
+                return
+            self._bg_building = True
+
+        def run() -> None:
+            try:
+                with self._build_lock:
+                    self._build()
+            except Exception:
+                pass
+            finally:
+                with self._lock:
+                    self._bg_building = False
+
+        threading.Thread(target=run, daemon=True, name="SnapshotRefresh").start()
 
     # ---------------- 失效与构建 ----------------
     def invalidate(self) -> None:
@@ -123,15 +192,16 @@ class SnapshotCache:
             self._current_id = snapshot_id
             while len(self._snapshots) > self._max_snapshots:
                 self._snapshots.popitem(last=False)
+        self._persist(snapshot)
         return snapshot
 
-    def get(self, snapshot_id: str | None = None) -> tuple[Snapshot, str]:
+    def get(self, snapshot_id: str | None = None, allow_stale: bool = False) -> tuple[Snapshot, str]:
         """取快照，同时返回缓存状态。
 
-        Returns:
-            `(snapshot, cache_status)`，`cache_status ∈ {"hit", "miss"}`。
-            `miss` = 本次真的重建了（要花 ~1.1s），用于 `X-Cache` 响应头诊断。
-
+        Args:
+            allow_stale: True 时若指纹已变化但仍有旧快照，立即返回旧快照并后台重建
+                （`cache_status="stale"`），用于把冷启动 12 s 的构建移出首屏路径。
+            `(snapshot, cache_status)`，`cache_status ∈ {"hit", "miss", "stale"}`
         * 传了 `snapshot` 且命中 → 直接复用（分页稳定性优先，不再判指纹）；
         * 否则比对指纹，命中当前快照则复用，否则 single-flight 重建。
         """
@@ -147,6 +217,9 @@ class SnapshotCache:
         fingerprint = self._fingerprint()
         if current is not None and current.fingerprint == fingerprint and current.age_seconds(now) <= self._max_age:
             return current, "hit"
+        if allow_stale and current is not None:
+            self._refresh_async()
+            return current, "stale"
 
         # single-flight：构建期间其他线程阻塞在同一把锁上，不重复构建
         with self._build_lock:
@@ -178,7 +251,7 @@ class SnapshotCache:
         `X-Query-Ms` / `X-Build-Ms` / `X-Cache`。
         """
         started = time.perf_counter()
-        snapshot, cache_status = self.get(_first(query, "snapshot") or None)
+        snapshot, cache_status = self.get(_first(query, "snapshot") or None, allow_stale=True)
 
         search = (_first(query, "q") or "").strip().lower()
         fmt_filter = (_first(query, "format") or "").strip()
@@ -214,6 +287,10 @@ class SnapshotCache:
         filtered.sort(key=lambda item: _sort_key(item, sort_by), reverse=is_desc)
 
         total = len(filtered)
+        stats = {
+            "bytes": sum(int(item.get("bytes") or 0) for item in filtered),
+            "tokens": sum(int(item.get("tokens") or 0) for item in filtered),
+        }
         if limit > 0:
             page = filtered[offset: offset + limit]
         else:
@@ -235,6 +312,8 @@ class SnapshotCache:
         }
         response: dict[str, Any] = {
             "sessions": page,
+            # 统计只针对**全部过滤结果**，不能由前端按已加载页累加（分页时会低报）
+            "stats": stats,
             # count 语义保持旧约定：**本次返回条数**（不是总数），旧前端读它不会坏
             "count": len(page),
             "total": total,

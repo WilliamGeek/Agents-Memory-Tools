@@ -11,12 +11,14 @@ import json
 import time
 import sqlite3
 import shutil
+import subprocess
 import tempfile
 import urllib.parse
 import re
 import hashlib
 import gzip
 import threading
+import multiprocessing
 from html import unescape as _html_unescape
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -38,12 +40,60 @@ if sys.stderr is None:
 
 
 # Ensure session-migrate virtualenv or package is importable
-SCRIPT_DIR = Path(__file__).resolve().parent
+import runtime_paths
+
+SCRIPT_DIR = runtime_paths.RESOURCE_DIR
 sys.path.insert(0, str(SCRIPT_DIR))
-FRONTEND_OUT_DIR = SCRIPT_DIR / "frontend" / "out"
+FRONTEND_OUT_DIR = runtime_paths.FRONTEND_OUT_DIR
+TOOLS_DIR = runtime_paths.TOOLS_DIR
+DATA_DIR = runtime_paths.DATA_DIR
+runtime_paths.ensure_runtime_dirs()
+
+# 兼容旧代码里的硬编码用户目录；新代码应使用 runtime_paths 的 *_path()。
+USERPROFILE = runtime_paths.user_home()
+ROAMING_APPDATA = runtime_paths.roaming_dir()
+LOCAL_APPDATA = runtime_paths.local_app_data_dir()
+
+
+def _home_path(*parts: str) -> Path:
+    return USERPROFILE.joinpath(*parts)
+
+
+def _roaming_path(*parts: str) -> Path:
+    return ROAMING_APPDATA.joinpath(*parts)
+
+
+def _local_path(*parts: str) -> Path:
+    return LOCAL_APPDATA.joinpath(*parts)
+
+
+
+
+def _no_window_kwargs() -> dict:
+    """后台（pythonw / 无控制台）运行时，子进程一律不创建控制台窗口。
+
+    pythonw 自身没有控制台，此时启动 netstat / taskkill / cmd 等控制台程序，
+    Windows 会为其新建一个黑色终端窗口并闪烁；这里统一加上 CREATE_NO_WINDOW。
+    """
+    try:
+        import subprocess
+        if os.name == "nt":
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = subprocess.SW_HIDE
+            return {
+                "creationflags": subprocess.CREATE_NO_WINDOW,
+                "startupinfo": si,
+            }
+    except Exception:
+        pass
+    return {}
 
 # 服务层（本轮 refactor 新增）：单向依赖，services/* 不会 import 本模块
 from services import detail as detail_service
+from services import doubao_cloud
+from services import doubao_idb
+from services import instance as instance_service
 from services import snapshot as snapshot_service
 from services import turns as turns_service
 
@@ -185,6 +235,28 @@ def _install_antigravity_trajectory_type_compat() -> None:
 
 _install_antigravity_trajectory_type_compat()
 
+
+def _install_antigravity_limits_compat() -> None:
+    """放宽 Antigravity 原生会话库与单步 protobuf 载荷的安全上限。
+
+    新版 Antigravity IDE 长会话库可达 360MB+，且单步 MCP 工具调用载荷可达 95MB+，
+    超过 session-migrate 默认的 256MB / 64MB 上限后会直接报
+    'Antigravity conversation exceeds the database safety limit' 导致详情加载失败。
+    """
+    try:
+        from session_migrate.formats import antigravity as _ag
+    except Exception:
+        return
+    if getattr(_ag, "_limits_compat", False):
+        return
+    _ag.MAX_NATIVE_BYTES = max(int(getattr(_ag, "MAX_NATIVE_BYTES", 0)), 1024 * 1024 * 1024)
+    _ag.MAX_PROTO_VALUE_BYTES = max(int(getattr(_ag, "MAX_PROTO_VALUE_BYTES", 0)), 512 * 1024 * 1024)
+    _ag.MAX_TEXT_BYTES = max(int(getattr(_ag, "MAX_TEXT_BYTES", 0)), 512 * 1024 * 1024)
+    _ag._limits_compat = True
+
+
+_install_antigravity_limits_compat()
+
 PORT = 18922
 # 允许通过环境变量 / 命令行覆盖端口（多实例自测用；默认仍是 18922，行为不变）
 try:
@@ -193,12 +265,12 @@ try:
         PORT = _ENV_PORT
 except (TypeError, ValueError):
     pass
-BASE_DIR = Path(__file__).resolve().parent
-EXPORT_DIR = BASE_DIR / "exports"
+BASE_DIR = runtime_paths.RESOURCE_DIR
+EXPORT_DIR = runtime_paths.EXPORT_DIR
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Permanent tiktoken cache directory in project workspace
-TIKTOKEN_LOCAL_CACHE = BASE_DIR / "tiktoken_cache"
+# Permanent tiktoken cache directory in the writable data directory.
+TIKTOKEN_LOCAL_CACHE = runtime_paths.TIKTOKEN_CACHE_DIR
 TIKTOKEN_LOCAL_CACHE.mkdir(exist_ok=True)
 os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(TIKTOKEN_LOCAL_CACHE))
 
@@ -228,7 +300,7 @@ def get_hf_tokenizer(tokenizer_path_or_id: str) -> Any:
     except Exception:
         return None
 
-TOKEN_CACHE_PATH = BASE_DIR / "token_cache.json"
+TOKEN_CACHE_PATH = runtime_paths.TOKEN_CACHE_PATH
 _TOKEN_CACHE: dict[str, dict[str, Any]] = {}
 _TOKEN_CACHE_LOADED = False
 _TOKEN_CACHE_DIRTY = False
@@ -262,6 +334,25 @@ def _dir_signature(directory: Path, pattern: str = "*") -> bytes:
     return f"|{directory}|{count}|{newest}".encode("utf-8", "replace")
 
 
+def _dir_signature_recursive(directory: Path) -> bytes:
+    """递归目录指纹：用于 Claude/Codex 这类按项目子目录存会话的 roots。"""
+    count = 0
+    newest = 0
+    try:
+        if not directory.exists():
+            return f"|{directory}|missing".encode("utf-8", "replace")
+        for entry in directory.rglob("*"):
+            try:
+                stat = entry.stat()
+            except OSError:
+                continue
+            count += 1
+            newest = max(newest, stat.st_mtime_ns)
+    except OSError:
+        return f"|{directory}|error".encode("utf-8", "replace")
+    return f"|{directory}|rec|{count}|{newest}".encode("utf-8", "replace")
+
+
 def _sessions_fingerprint() -> str:
     """列表内容指纹：roots + catalog 规模 + antigravity 目录 + 失效令牌。
 
@@ -277,6 +368,27 @@ def _sessions_fingerprint() -> str:
                 "SELECT id, format, path, enabled FROM roots ORDER BY id"
             ).fetchall()
             digest.update(repr([tuple(r) for r in roots]).encode("utf-8", "replace"))
+            # 目录型 roots（Claude / Codex / 其它本地平台）也要参与指纹，
+            # 否则新增会话后快照可能继续吃旧列表。
+            for _rid, _fmt, root_path, _enabled in roots:
+                if not root_path:
+                    continue
+                try:
+                    rp = Path(root_path)
+                    if rp.is_dir():
+                        digest.update(_dir_signature(rp))
+                    elif rp.is_file():
+                        st = rp.stat()
+                        digest.update(f"|rootfile|{rp}|{st.st_mtime_ns}|{st.st_size}".encode("utf-8", "replace"))
+                except Exception:
+                    digest.update(f"|root|error|{root_path}".encode("utf-8", "replace"))
+            # Claude / Codex 的会话落在项目子目录里，单独递归计算一次；
+            # 只做这两个窄目录，避免对 F:\Codex 等大根目录做全量遍历。
+            for hot_dir in (
+                _home_path(".claude", "projects"),
+                _home_path(".codex", "sessions"),
+            ):
+                digest.update(_dir_signature_recursive(hot_dir))
             row = db.execute(
                 "SELECT COUNT(*), MAX(id) FROM sessions WHERE status != 'missing'"
             ).fetchone()
@@ -287,11 +399,186 @@ def _sessions_fingerprint() -> str:
         digest.update(b"catalog-error")
     for ag_dir in ANTIGRAVITY_CONV_DIRS:
         digest.update(_dir_signature(ag_dir, "*.db"))
-    digest.update(_dir_signature(Path(r"C:\Users\HP\.workbuddy\projects")))
-    digest.update(_dir_signature(Path(r"C:\Users\HP\AppData\Roaming\Trae CN\User")))
-    digest.update(_dir_signature(Path(r"C:\Users\HP\AppData\Roaming\TRAE SOLO CN\User")))
-    digest.update(_dir_signature(Path(r"C:\Users\HP\.trae-cn\memory")))
+    digest.update(_dir_signature(_home_path(".workbuddy", "projects")))
+    digest.update(_dir_signature(_roaming_path("Trae CN", "User")))
+    digest.update(_dir_signature(_roaming_path("TRAE SOLO CN", "User")))
+    digest.update(_dir_signature(_home_path(".trae-cn", "memory")))
+    # Trae 源库变化后要重建快照；否则后台重解密完成但列表仍可能吃旧快照。
+    try:
+        src_mtime = _trae_source_mtime()
+        plain = TRAE_PLAIN_DB.stat()
+        digest.update(
+            f"|trae|{int(src_mtime * 1e9)}|{plain.st_mtime_ns}|{plain.st_size}".encode("ascii")
+        )
+    except Exception:
+        digest.update(b"|trae|missing")
+    for idb_dir in doubao_idb.leveldb_dirs(
+        LOCAL_APPDATA / "Doubao" / "User Data"
+    ):
+        digest.update(_dir_signature(idb_dir))
+    digest.update(repr(doubao_cloud.signature()).encode("ascii", errors="ignore"))
     return digest.hexdigest()
+
+
+_DOUBAO_SYNC_STATE: dict[str, Any] = {
+    "running": False,
+    "started_at": 0.0,
+    "last_result": None,
+}
+_DOUBAO_SYNC_LOCK = threading.Lock()
+DOUBAO_AUTOSYNC_SECONDS = 6 * 3600
+
+
+def _helper_script(tool: str) -> Path:
+    scripts = {
+        "doubao-sync": TOOLS_DIR / "doubao_sync.py",
+        "trae-decrypt": TOOLS_DIR / "dbkey" / "decrypt_trae.py",
+    }
+    return scripts[tool]
+
+
+def helper_command(tool: str, *args: str) -> list[str]:
+    """构造后台 helper 命令。
+
+    源码模式沿用原来的“Python + 脚本”方式；冻结后 ``sys.executable`` 是
+    主 exe，不能再传脚本路径，因此改成 ``MemoryTools.exe --helper <tool>``，
+    由同一 exe 的 helper 分支执行。Tauri sidecar 也复用这个入口。
+    """
+    if runtime_paths.is_frozen():
+        return [sys.executable, "--helper", tool, *args]
+    return [sys.executable, str(_helper_script(tool)), *args]
+
+
+def run_helper(tool: str, args: list[str]) -> int:
+    """在独立 helper 进程中执行工具脚本；返回进程退出码。"""
+    script = _helper_script(tool)
+    if not script.exists():
+        print(f"Helper script not found: {script}", file=sys.stderr)
+        return 2
+    sys.path.insert(0, str(script.parent))
+    sys.argv = [str(script), *args]
+    import runpy
+
+    runpy.run_path(str(script), run_name="__main__")
+    return 0
+
+
+def run_doubao_sync_worker(full: bool = False, only: str = "", limit: int = 0) -> None:
+    """后台执行 tools/doubao_sync.py，完成后刷新快照与 FTS。"""
+    args = helper_command("doubao-sync", "--quiet")
+
+    if full:
+        args.append("--full")
+    if only:
+        args.extend(["--only", str(only)])
+    if limit:
+        args.extend(["--limit", str(limit)])
+    try:
+        proc = subprocess.run(
+            args,
+            cwd=str(SCRIPT_DIR),
+            capture_output=True,
+            timeout=1800,
+            **_no_window_kwargs(),
+        )
+        _DOUBAO_SYNC_STATE["last_result"] = {
+            "ok": proc.returncode == 0,
+            "code": proc.returncode,
+            "stderr": proc.stderr.decode("utf-8", errors="ignore")[-600:],
+            "finished_at": time.time(),
+        }
+    except Exception as exc:
+        _DOUBAO_SYNC_STATE["last_result"] = {
+            "ok": False,
+            "code": -1,
+            "stderr": str(exc)[:600],
+            "finished_at": time.time(),
+        }
+    finally:
+        _DOUBAO_SYNC_STATE["running"] = False
+    try:
+        invalidate_sessions_cache()
+        trigger_fts_sync()
+    except Exception:
+        pass
+
+
+def start_doubao_sync(full: bool = False, only: str = "", limit: int = 0) -> bool:
+    """启动后台同步；已有任务在跑时返回 False。"""
+    with _DOUBAO_SYNC_LOCK:
+        if _DOUBAO_SYNC_STATE["running"]:
+            return False
+        _DOUBAO_SYNC_STATE["running"] = True
+        _DOUBAO_SYNC_STATE["started_at"] = time.time()
+    threading.Thread(
+        target=run_doubao_sync_worker,
+        args=(full, only, limit),
+        daemon=True,
+        name="DoubaoCloudSync",
+    ).start()
+    return True
+
+
+# 详情打开时的单会话按需刷新阈值；全局 6 小时兜底仍由 _maybe_autosync_doubao 负责。
+DOUBAO_DETAIL_REFRESH_SECONDS = 120
+_DOUBAO_DETAIL_REFRESH_LOCK = threading.Lock()
+_DOUBAO_DETAIL_REFRESH_LAST: dict[str, float] = {}
+
+
+def _doubao_cloud_cid_for_catalog(cid: str) -> str:
+    """把 db_<前16位> 还原成云端 manifest 的完整 conversation_id。"""
+    if not cid.startswith("db_"):
+        return ""
+    prefix = cid[3:]
+    for full in doubao_cloud.load().keys():
+        if str(full).startswith(prefix):
+            return str(full)
+    return ""
+
+
+def _maybe_refresh_doubao_detail(cid: str) -> bool:
+    """详情请求前调用：单会话过期则触发一次 --only 后台同步。
+
+    返回 True 表示本轮详情返回的是旧缓存，客户端应稍后重取；False 表示无需刷新。
+    """
+    full = _doubao_cloud_cid_for_catalog(cid)
+    if not full or not doubao_cloud.has_cookie_cache():
+        return False
+    if not doubao_cloud.is_stale(full, DOUBAO_DETAIL_REFRESH_SECONDS):
+        return False
+
+    # 同一会话短时间内连点详情时，不要把 --only 任务堆起来。
+    with _DOUBAO_DETAIL_REFRESH_LOCK:
+        last = _DOUBAO_DETAIL_REFRESH_LAST.get(full, 0.0)
+        if time.time() - last < 20:
+            return True
+        _DOUBAO_DETAIL_REFRESH_LAST[full] = time.time()
+
+    start_doubao_sync(only=full)
+    return True
+
+
+def _maybe_autosync_doubao() -> None:
+    """有 Cookie 缓存且距上次同步超过 6 小时时，后台增量同步一次。"""
+    try:
+        if not doubao_cloud.has_cookie_cache():
+            return
+        if time.time() - doubao_cloud.last_sync_ts() < DOUBAO_AUTOSYNC_SECONDS:
+            return
+        start_doubao_sync()
+    except Exception:
+        pass
+
+
+def _build_snapshot_items() -> list[dict]:
+    """快照构建 + 顺带触发增量 FTS 同步（豆包 IndexedDB 写入后自动可检索）。"""
+    _maybe_autosync_doubao()
+    items = collect_all_sessions(fmt_filter="all", search="")
+    try:
+        trigger_fts_sync()
+    except Exception:
+        pass
+    return items
 
 
 def _get_snapshot_cache() -> "snapshot_service.SnapshotCache":
@@ -301,8 +588,9 @@ def _get_snapshot_cache() -> "snapshot_service.SnapshotCache":
         with _SNAPSHOT_CACHE_LOCK:
             if _SNAPSHOT_CACHE is None:
                 _SNAPSHOT_CACHE = snapshot_service.SnapshotCache(
-                    builder=lambda: collect_all_sessions(fmt_filter="all", search=""),
+                    builder=_build_snapshot_items,
                     fingerprint=_sessions_fingerprint,
+                    persist_path=runtime_paths.CACHE_DIR / "sessions_snapshot.json.gz",
                 )
     return _SNAPSHOT_CACHE
 
@@ -376,7 +664,7 @@ def estimate_text_tokens(text: str) -> int:
 # 长会话下两者必定差数倍。因此优先读记录值，估算值退化为 content_tokens 备用指标。
 # ---------------------------------------------------------------------------
 # 缓存签名带版本号：口径变更时旧缓存自动失效，不会沿用历史错误值。
-TOKEN_CACHE_VERSION = 2
+TOKEN_CACHE_VERSION = 4
 
 
 def _pb_iter(buf: bytes, stop_after: int | None = None):
@@ -505,6 +793,12 @@ def _antigravity_recorded_usage(db_path: Path) -> dict[str, int] | None:
 
 
 def _claude_recorded_usage(jsonl_path: Path) -> dict[str, int] | None:
+    """逐行累计 Claude Code 的用量（保留旧口径）。
+
+    说明：Claude Code 流式写盘时同一 `message.id` 会落多行、每行带同一份 usage，
+    逐行相加会把同一次请求重复计费。但用户明确要求「真实值比旧值小时保留旧值」，
+    因此这里维持逐行累计，不做按 id 去重。
+    """
     agg = {"input": 0, "output": 0, "thoughts": 0, "fixed": 0, "calls": 0}
     try:
         with open(jsonl_path, "r", encoding="utf-8", errors="ignore") as fh:
@@ -539,11 +833,78 @@ def _claude_recorded_usage(jsonl_path: Path) -> dict[str, int] | None:
     return agg
 
 
+def _workbuddy_recorded_usage(jsonl_path: Path) -> dict[str, int] | None:
+    """读取 WorkBuddy 的 providerData.rawUsage（每次模型请求的供应商真实用量）。
+
+    口径与 CC Switch 保持一致：
+    * 一次请求只有一个事件带 rawUsage，事件 id 即请求 id，按 id 去重；
+    * prompt_tokens 已是 OpenAI 口径（含缓存命中），completion_tokens 含思考；
+    * rawUsage 缺失时退回 agents SDK 的 usage（inputTokens/outputTokens），
+      同样按 messageId 去重。
+    """
+    agg = {"input": 0, "output": 0, "thoughts": 0, "fixed": 0, "calls": 0}
+    by_request: dict[str, tuple[int, int, int]] = {}
+    unkeyed: list[tuple[int, int, int]] = []
+    try:
+        with open(jsonl_path, "r", encoding="utf-8", errors="ignore") as fh:
+            for idx, line in enumerate(fh):
+                line = line.strip()
+                if not line:
+                    continue
+                if '"rawUsage"' not in line and '"inputTokens"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                pd = rec.get("providerData")
+                pd = pd if isinstance(pd, dict) else {}
+                raw = pd.get("rawUsage")
+                prompt = completion = thoughts = 0
+                if isinstance(raw, dict):
+                    prompt = int(raw.get("prompt_tokens") or 0)
+                    completion = int(raw.get("completion_tokens") or 0)
+                    details = raw.get("completion_tokens_details")
+                    if isinstance(details, dict):
+                        thoughts = int(details.get("reasoning_tokens") or 0)
+                else:
+                    usage = rec.get("usage")
+                    if not isinstance(usage, dict):
+                        continue
+                    prompt = int(usage.get("inputTokens") or usage.get("input_tokens") or 0)
+                    completion = int(usage.get("outputTokens") or usage.get("output_tokens") or 0)
+                    details = usage.get("outputTokensDetails") or usage.get("completion_tokens_details")
+                    if isinstance(details, dict):
+                        thoughts = int(details.get("reasoningTokens") or details.get("reasoning_tokens") or 0)
+                if prompt + completion <= 0:
+                    continue
+                key = str(rec.get("id") or pd.get("messageId") or "").strip()
+                triple = (prompt, completion, thoughts)
+                if key:
+                    prev = by_request.get(key)
+                    if prev is None or prompt + completion > prev[0] + prev[1]:
+                        by_request[key] = triple
+                else:
+                    unkeyed.append(triple)
+    except Exception:
+        return None
+    for prompt, completion, thoughts in list(by_request.values()) + unkeyed:
+        agg["input"] += prompt
+        agg["output"] += completion
+        agg["thoughts"] += thoughts
+        agg["calls"] += 1
+    if agg["calls"] <= 0 or agg["input"] <= 0:
+        return None
+    return agg
+
+
 def read_recorded_usage(fmt: str, file_path: Path | None) -> dict[str, int] | None:
     """按平台读取真实请求用量；读不到返回 None，由估算逻辑接管。
 
-    WorkBuddy 的 model-usage 记录只覆盖极少数请求（本机 2366 次调用仅 6 条），
-    用它求和会严重低估，因此不予采用，继续走累计估算。
+    计数口径对齐 CC Switch：
+    * Claude Code 按 message.id 去重（流式多行同 usage）；
+    * WorkBuddy 按请求事件 id 汇总 providerData.rawUsage；
+    * Antigravity 解析 step 内嵌 usage。
     """
     if not file_path or not file_path.exists():
         return None
@@ -552,6 +913,8 @@ def read_recorded_usage(fmt: str, file_path: Path | None) -> dict[str, int] | No
             return _antigravity_recorded_usage(file_path)
         if fmt == "claude" and file_path.suffix == ".jsonl":
             return _claude_recorded_usage(file_path)
+        if fmt == "workbuddy" and file_path.suffix == ".jsonl":
+            return _workbuddy_recorded_usage(file_path)
     except Exception:
         return None
     return None
@@ -847,11 +1210,11 @@ AGENT_META = {
 }
 
 # Pre-cache brain_readable map for clean Antigravity titles
-BRAIN_READABLE_DIR = Path(r"C:\Users\HP\.gemini\antigravity-ide\brain_readable")
-ANTIGRAVITY_APP_DIR = Path(r"C:\Users\HP\.gemini\antigravity")
+BRAIN_READABLE_DIR = _home_path(".gemini", "antigravity-ide", "brain_readable")
+ANTIGRAVITY_APP_DIR = _home_path(".gemini", "antigravity")
 ANTIGRAVITY_CONV_DIRS = [
-    Path(r"C:\Users\HP\.gemini\antigravity\conversations"),
-    Path(r"C:\Users\HP\.gemini\antigravity-cli\conversations"),
+    _home_path(".gemini", "antigravity", "conversations"),
+    _home_path(".gemini", "antigravity-cli", "conversations"),
 ]
 
 _AG_LINEAGE_CACHE: dict[tuple[str, float, int], str] = {}
@@ -1030,8 +1393,8 @@ def load_antigravity_summaries_map() -> dict[str, dict[str, Any]]:
     """Load latest official titles and metadata from Antigravity's conversation_summaries.db."""
     summaries: dict[str, dict[str, Any]] = {}
     db_paths = [
-        Path(r"C:\Users\HP\.gemini\antigravity\conversation_summaries.db"),
-        Path(r"C:\Users\HP\.gemini\antigravity-ide\conversation_summaries.db"),
+        _home_path(".gemini", "antigravity", "conversation_summaries.db"),
+        _home_path(".gemini", "antigravity-ide", "conversation_summaries.db"),
     ]
     for db_p in db_paths:
         if not db_p.exists() or db_p.stat().st_size == 0:
@@ -1180,9 +1543,32 @@ def load_brain_readable_map() -> dict[str, dict[str, str]]:
                 }
     return readable_map
 
+_CLAUDE_TITLE_STRIP_RE = re.compile(
+    r"<(?:local-command-caveat|command-name|command-message|command-args|local-command-stdout|local-command-stderr|"
+    r"bash-input|bash-stdout|bash-stderr|ide_opened_file|ide_selection|system-reminder|task-notification|"
+    r"conversation_history_summary)\b[^>]*>.*?</(?:local-command-caveat|command-name|command-message|command-args|"
+    r"local-command-stdout|local-command-stderr|bash-input|bash-stdout|bash-stderr|ide_opened_file|ide_selection|"
+    r"system-reminder|task-notification|conversation_history_summary)>",
+    re.S | re.I,
+)
+
+
+def _clean_claude_title_candidate(raw_text: str) -> str:
+    """剥离 Claude Code 的 XML 系统/命令包裹，提取真实用户提问标题。"""
+    if not raw_text:
+        return ""
+    cleaned = _CLAUDE_TITLE_STRIP_RE.sub(" ", raw_text)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return ""
+    return cleaned.splitlines()[0][:60].strip()
+
+
 def extract_claude_title_and_date(jsonl_path: Path) -> tuple[str, str]:
     title = ""
     date_str = ""
+    fallback_title = ""
     try:
         with open(jsonl_path, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
@@ -1198,18 +1584,30 @@ def extract_claude_title_and_date(jsonl_path: Path) -> tuple[str, str]:
                         pass
                 if data.get("type") == "user" and "message" in data:
                     content = data["message"].get("content")
+                    raw_cand = ""
                     if isinstance(content, str) and content.strip():
-                        title = content.strip().splitlines()[0][:60]
-                        break
+                        raw_cand = content.strip()
                     elif isinstance(content, list):
                         for item in content:
                             if isinstance(item, dict) and item.get("text"):
-                                title = item["text"].strip().splitlines()[0][:60]
+                                raw_cand = item["text"].strip()
                                 break
-                        if title:
+                    if raw_cand:
+                        cleaned = _clean_claude_title_candidate(raw_cand)
+                        if cleaned:
+                            title = cleaned
                             break
+                        if not fallback_title:
+                            m_bash = re.search(r"<bash-input>\s*(.*?)\s*</bash-input>", raw_cand, re.S | re.I)
+                            m_cmd = re.search(r"<command-name>\s*(.*?)\s*</command-name>", raw_cand, re.S | re.I)
+                            if m_bash and m_bash.group(1).strip():
+                                fallback_title = f"命令：{m_bash.group(1).strip()[:50]}"
+                            elif m_cmd and m_cmd.group(1).strip():
+                                fallback_title = f"斜杠命令：{m_cmd.group(1).strip()[:50]}"
     except Exception:
         pass
+    if not title:
+        title = fallback_title
     if not date_str:
         try:
             date_str = datetime.fromtimestamp(jsonl_path.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%d")
@@ -1533,6 +1931,9 @@ _UNIV_SYS_BLOCK_RES = (
     re.compile(r"<environment_context\b[^>]*>.*?</environment_context>", re.S | re.I),
     re.compile(r"<conversation_history_summary\b[^>]*>.*?</conversation_history_summary>", re.S | re.I),
     re.compile(r"<task-notification\b[^>]*>.*?</task-notification>", re.S | re.I),
+    re.compile(r"<local-command-caveat\b[^>]*>.*?</local-command-caveat>", re.S | re.I),
+    re.compile(r"<ide_opened_file\b[^>]*>.*?</ide_opened_file>", re.S | re.I),
+    re.compile(r"<ide_selection\b[^>]*>.*?</ide_selection>", re.S | re.I),
 )
 _UNIV_CAVEAT_RE = re.compile(
     r"Caveat: The messages below were generated by the user while running local commands\.[^\n]*", re.I
@@ -1627,7 +2028,36 @@ def sanitize_session_events(events: list[dict[str, Any]], fmt: str = "") -> list
         if not raw:
             continue
 
-        # 1) 整条就是 CLI 斜杠命令或其输出
+        # 1) 整条就是 CLI 斜杠命令或其输出 / Claude bash-input / bash-stdout
+        if raw.startswith("<bash-input>"):
+            m_in = re.search(r"<bash-input>\s*(.*?)\s*</bash-input>", raw, re.S | re.I)
+            cmd_txt = (m_in.group(1).strip() if m_in else raw)
+            cleaned_events.append({
+                "kind": "tool_call",
+                "role": "assistant",
+                "timestamp": event.get("timestamp", ""),
+                "text": cmd_txt,
+                "tool_name": "Bash",
+                "tool_call_id": "",
+                "payload": {"command": cmd_txt},
+            })
+            continue
+        if raw.startswith("<bash-stdout>") or raw.startswith("<bash-stderr>"):
+            out_parts = []
+            for m_out in re.finditer(r"<bash-(stdout|stderr)>\s*(.*?)\s*</bash-\1>", raw, re.S | re.I):
+                body_out = _strip_ansi(m_out.group(2)).strip()
+                if body_out:
+                    out_parts.append(body_out)
+            cleaned_events.append({
+                "kind": "tool_result",
+                "role": "tool",
+                "timestamp": event.get("timestamp", ""),
+                "text": "\n".join(out_parts) or "(无输出)",
+                "tool_name": "Bash",
+                "tool_call_id": "",
+                "payload": None,
+            })
+            continue
         if raw.startswith("<command-name>") or raw.startswith("<local-command-"):
             cleaned_events.append({
                 "kind": "notice",
@@ -1862,7 +2292,7 @@ def _wb_first_record_timestamp(jsonl_path: Path) -> float | None:
 
 
 def get_workbuddy_sessions() -> list[dict[str, Any]]:
-    wb_dir = Path(r"C:\Users\HP\.workbuddy")
+    wb_dir = _home_path(".workbuddy")
     db_path = wb_dir / "workbuddy.db"
     meta_by_id = {}
     if db_path.exists():
@@ -1989,13 +2419,578 @@ def make_temp_claude_jsonl(messages: list[dict[str, str]], sid: str) -> Path:
     tmp.close()
     return Path(tmp.name)
 
+TRAE_SRC_DB = runtime_paths.roaming_dir() / "Trae CN" / "ModularData" / "ai-agent" / "database.db"
+TRAE_PLAIN_DB = runtime_paths.TRAE_PLAIN_DB
+_TRAE_DB_CACHE: dict[str, Any] = {"sig": "", "index": {}}
+_TRAE_INDEX_CACHE_PATH = runtime_paths.CACHE_DIR / "trae_db_index.json"
+_TRAE_REFRESH_LOCK = threading.Lock()
+_TRAE_REFRESH_RUNNING = False
+_TRAE_REFRESH_LAST_ATTEMPT = 0.0
+
+
+def _trae_source_mtime() -> float:
+    """源库主文件 + WAL 的最新 mtime；没有源库返回 0。"""
+    latest = 0.0
+    for p in (TRAE_SRC_DB, Path(str(TRAE_SRC_DB) + "-wal")):
+        try:
+            latest = max(latest, p.stat().st_mtime)
+        except OSError:
+            continue
+    return latest
+
+
+def _maybe_refresh_trae_plain() -> None:
+    """源库比解密副本新时，后台重解密，不阻塞当前列表请求。"""
+    global _TRAE_REFRESH_RUNNING, _TRAE_REFRESH_LAST_ATTEMPT
+    source_mtime = _trae_source_mtime()
+    if source_mtime <= 0:
+        return
+    try:
+        plain_mtime = TRAE_PLAIN_DB.stat().st_mtime if TRAE_PLAIN_DB.exists() else 0.0
+    except OSError:
+        plain_mtime = 0.0
+    if plain_mtime >= source_mtime:
+        return
+
+    with _TRAE_REFRESH_LOCK:
+        if _TRAE_REFRESH_RUNNING or (time.time() - _TRAE_REFRESH_LAST_ATTEMPT) < 60:
+            return
+        _TRAE_REFRESH_RUNNING = True
+        _TRAE_REFRESH_LAST_ATTEMPT = time.time()
+
+    def worker():
+        global _TRAE_REFRESH_RUNNING
+        try:
+            proc = subprocess.run(
+                helper_command("trae-decrypt"),
+                cwd=str(SCRIPT_DIR),
+
+                capture_output=True,
+                timeout=1800,
+                **_no_window_kwargs(),
+            )
+            if proc.returncode == 0:
+                _TRAE_DB_CACHE["sig"] = ""
+                invalidate_sessions_cache()
+                try:
+                    trigger_fts_sync()
+                except Exception:
+                    pass
+        finally:
+            with _TRAE_REFRESH_LOCK:
+                _TRAE_REFRESH_RUNNING = False
+
+    threading.Thread(target=worker, daemon=True, name="TraeReDecrypt").start()
+
+
+def _trae_db_conn() -> sqlite3.Connection | None:
+    """只读打开解密后的 Trae database.db；不存在则返回 None。"""
+    if not TRAE_PLAIN_DB.exists():
+        return None
+    try:
+        return sqlite3.connect(f"file:{TRAE_PLAIN_DB.as_posix()}?mode=ro", uri=True, timeout=5)
+    except Exception:
+        return None
+
+
+_TRAE_SYS_BLOCK_RE = re.compile(r"<system-reminder\b[^>]*>.*?</system-reminder>", re.S | re.I)
+_TRAE_USER_INPUT_RE = re.compile(r"<user_input\b[^>]*>(.*?)</user_input>", re.S | re.I)
+_TRAE_UPLOADED_RE = re.compile(
+    r"<(?:user_)?uploaded_files\b[^>]*>(.*?)</(?:user_)?uploaded_files>", re.S | re.I
+)
+_TRAE_FILE_TAG_RE = re.compile(r"<file\b[^>]*?/?>", re.I)
+_TRAE_FILE_NAME_RE = re.compile(r'\bname="([^"]*)"', re.I)
+_TRAE_FILE_PATH_RE = re.compile(r'\bpath="([^"]*)"', re.I)
+_TRAE_TOOLCALL_RESULT_RE = re.compile(r"<toolcall_result>(.*?)(?:</toolcall_result>|$)", re.S | re.I)
+_TRAE_XML_NOISE_RES = (
+    re.compile(r"<shell_command_id>.*?</shell_command_id>", re.S | re.I),
+    re.compile(r"<shell_status>.*?</shell_status>", re.S | re.I),
+    re.compile(r"<shell_exit_code>.*?</shell_exit_code>", re.S | re.I),
+    re.compile(r"<terminal_id>.*?</terminal_id>", re.S | re.I),
+    re.compile(r"<terminal_cwd>.*?</terminal_cwd>", re.S | re.I),
+    re.compile(r"<command_id>.*?</command_id>", re.S | re.I),
+    re.compile(r"<command_status>.*?</command_status>", re.S | re.I),
+    re.compile(r"<command_exit_code>.*?</command_exit_code>", re.S | re.I),
+    re.compile(r"<toolcall_status>.*?</toolcall_status>", re.S | re.I),
+    re.compile(r"<command_run_logs>", re.S | re.I),
+    re.compile(r"</command_run_logs>", re.S | re.I),
+    re.compile(r"<shell_output>", re.S | re.I),
+    re.compile(r"</shell_output>", re.S | re.I),
+    re.compile(r"<shell_stderr>", re.S | re.I),
+    re.compile(r"</shell_stderr>", re.S | re.I),
+    re.compile(r"<system-reminder\b[^>]*>.*?</system-reminder>", re.S | re.I),
+)
+
+
+def _trae_blocks(content: Any) -> list[str]:
+    """content（str 或 [{type:text,text:...}]）→ 纯文本块列表。"""
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    out: list[str] = []
+    for it in content:
+        if isinstance(it, str):
+            out.append(it)
+            continue
+        if not isinstance(it, dict):
+            continue
+        if it.get("type") == "text":
+            out.append(str(it.get("text") or ""))
+    return out
+
+
+def _trae_upload_names(inner: str) -> list[str]:
+    """从上传块内部提取文件名：兼容 `<file path=… name=…/>` 与纯文件名两种写法。"""
+    names: list[str] = []
+    if "<file" in inner.lower():
+        for tag in _TRAE_FILE_TAG_RE.findall(inner):
+            m = _TRAE_FILE_NAME_RE.search(tag)
+            name = (m.group(1) if m else "").strip()
+            if not name:
+                p = _TRAE_FILE_PATH_RE.search(tag)
+                if p:
+                    name = p.group(1).replace("\\", "/").rsplit("/", 1)[-1].strip()
+            if name:
+                names.append(name)
+        return names
+    for line in inner.splitlines():
+        name = line.strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _trae_clean_user_text(blocks: list[str]) -> tuple[str, list[str]]:
+    """从 Trae 用户轮的 content 块里取出「人真正敲的那句话」。
+
+    实测形态（history_v2）：一个 user 消息里可能有 4~6 个 text 块，
+    依次是若干 `<system-reminder>…</system-reminder>`（20K 字符的工作区/规则注入）、
+    一段 `# MCP Server Instructions`、最后才是 `<user_input>真正的输入</user_input>`。
+    直接拼接会把整段注入当成用户指令（截图里的「MCP Server Instructions」就是这么来的）。
+    规则：只要有 `<user_input>` 就只取它；否则剥离 system-reminder / MCP / REQUIREMENT 注入。
+    `<uploaded_files>` 与 `<user_uploaded_files>` 两种附件块都要剥掉，只留下文件名。
+    返回 (正文, 上传文件名列表)。
+    """
+    inputs: list[str] = []
+    kept: list[str] = []
+    uploads: list[str] = []
+    for block in blocks:
+        s = (block or "").strip()
+        if not s:
+            continue
+        for m in _TRAE_UPLOADED_RE.finditer(s):
+            uploads.extend(_trae_upload_names(m.group(1)))
+        if "<user_input" in s:
+            for m in _TRAE_USER_INPUT_RE.finditer(s):
+                inner = _TRAE_UPLOADED_RE.sub("", m.group(1))
+                inner = _TRAE_FILE_TAG_RE.sub("", inner).strip()
+                if inner:
+                    inputs.append(inner)
+            continue
+        if "uploaded_files" in s.lower():
+            s = _TRAE_UPLOADED_RE.sub("", s)
+            s = _TRAE_FILE_TAG_RE.sub("", s).strip()
+        if not s:
+            continue
+        if s.startswith("<system-reminder"):
+            continue
+        low = s.lower()
+        if low.startswith("# mcp server instructions") or low.startswith("mcp server instructions"):
+            continue
+        if re.match(r"^requirement\s*[:：]", s, re.I):
+            continue
+        kept.append(s)
+    core = "\n".join(inputs) if inputs else "\n".join(kept)
+    # 兜底：即使用户输入块之外还粘着附件标签（或 XML 闭合缺失），也把标签和
+    # `<file …/>` 清掉，避免详情页“用户指令”尾部残留路径块。
+    core = _TRAE_UPLOADED_RE.sub("", core)
+    core = re.sub(r"</?(?:user_)?uploaded_files\b[^>]*>", "", core, flags=re.I)
+    core = _TRAE_FILE_TAG_RE.sub("", core)
+    core = re.sub(r"</?user_input\b[^>]*>", "", core, flags=re.I)
+    core = re.sub(r"\n{3,}", "\n\n", core).strip()
+    return core, uploads
+
+
+def _trae_tidy_tool_output(text: str) -> tuple[str, bool]:
+    """把工具返回里的 Trae 私有 XML 外壳去掉，返回 (可读正文, 是否失败)。"""
+    raw = text or ""
+    low = raw.lower()
+    is_err = (
+        "command failed" in low
+        or ("exit code" in low and re.search(r"exit code\s*[1-9]", low) is not None)
+        or ("<command_exit_code>" in low and re.search(r"<command_exit_code>\s*[1-9]", low) is not None)
+    )
+    # 快路径：纯文本输出（无 XML 外壳、无围栏、不是 JSON 数组）直接返回，
+    # 避免对 3 万条工具结果做 60 万次正则替换。
+    if "<" not in raw and "```" not in raw:
+        stripped = raw.lstrip()
+        if not stripped.startswith("["):
+            return raw.strip()[:6000], is_err
+    m = _TRAE_TOOLCALL_RESULT_RE.search(raw)
+    body = (m.group(1) if m else raw).strip()
+    if body.startswith("["):
+        try:
+            arr = json.loads(body)
+            if isinstance(arr, list):
+                texts = [
+                    str(x.get("text") or "")
+                    for x in arr
+                    if isinstance(x, dict) and x.get("type") == "text" and str(x.get("text") or "")
+                ]
+                if texts:
+                    body = "\n".join(texts)
+        except Exception:
+            pass
+    for rx in _TRAE_XML_NOISE_RES:
+        body = rx.sub("", body)
+    # 去掉工具输出自带的 ``` 围栏（Trae 习惯把 stdout 包进代码块）
+    body = body.lstrip()
+    body = re.sub(r"^```[A-Za-z0-9_+-]*\s*\n?", "", body)
+    body = re.sub(r"\n?```\s*$", "", body)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    return body[:6000], is_err
+
+
+def _trae_parse_messages(raw: Any, call_names: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    """把 history_v2.messages 解析成结构化条目。
+
+    条目类型：
+      {"kind": "message", "role": "user|assistant", "text": ...}
+      {"kind": "tool_call", "tool_name": ..., "input": {...}, "text": ..., "tool_call_id": ...}
+      {"kind": "tool_result", "tool_name": ..., "text": ..., "is_error": bool, "tool_call_id": ...}
+    工具名取自 assistant 消息里的 `tool_calls[].function_call.name`；
+    role=tool 的消息本身不带 name，只带 tool_call_id，靠上面的映射回填。
+    """
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8", errors="ignore")
+        except Exception:
+            return []
+    if not isinstance(raw, str):
+        return []
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        return []
+    msgs = obj.get("raw_messages") or obj.get("messages") or []
+    if not isinstance(msgs, list):
+        return []
+
+    call_names: dict[str, str] = dict(call_names or {})
+    items: list[dict[str, Any]] = []
+    for m in msgs:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "")
+        blocks = _trae_blocks(m.get("content"))
+
+        if role == "user":
+            text, uploads = _trae_clean_user_text(blocks)
+            if text:
+                items.append({"kind": "message", "role": "user", "text": text, "from_message": True})
+            elif uploads:
+                items.append({
+                    "kind": "message",
+                    "role": "user",
+                    "text": "上传文件：" + "、".join(uploads[:10]),
+                    "from_message": True,
+                    "is_upload": True,
+                })
+            continue
+
+        if role == "assistant":
+            text = "\n".join(b for b in blocks if b and b.strip()).strip()
+            if text:
+                items.append({"kind": "message", "role": "assistant", "text": text, "from_message": True})
+            for tc in m.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function_call") or {}
+                name = str(fn.get("name") or tc.get("name") or "tool")
+                args_raw = fn.get("arguments")
+                args: Any = args_raw
+                if isinstance(args_raw, str):
+                    try:
+                        args = json.loads(args_raw)
+                    except Exception:
+                        args = {"raw": args_raw}
+                call_id = str(tc.get("id") or "")
+                if call_id:
+                    call_names[call_id] = name
+                try:
+                    detail = json.dumps(args, ensure_ascii=False, indent=2) if isinstance(args, (dict, list)) else str(args or "")
+                except Exception:
+                    detail = str(args or "")
+                items.append({
+                    "kind": "tool_call",
+                    "tool_name": name,
+                    "text": detail[:6000],
+                    "input": args if isinstance(args, dict) else {"raw": args},
+                    "tool_call_id": call_id,
+                    "from_message": False,
+                })
+            continue
+
+        if role == "tool":
+            call_id = str(m.get("tool_call_id") or "")
+            name = str(m.get("name") or "") or call_names.get(call_id, "") or "tool"
+            text, is_err = _trae_tidy_tool_output("\n".join(blocks))
+            if text:
+                items.append({
+                    "kind": "tool_result",
+                    "tool_name": name,
+                    "text": text,
+                    "is_error": is_err,
+                    "tool_call_id": call_id,
+                    "from_message": True,
+                })
+    return items
+
+
+def _trae_collect_call_names(raws: list[Any]) -> dict[str, str]:
+    """会话内全部 tool_calls 的 id → 工具名。
+
+    Trae 会把 assistant 的 tool_calls 与对应的 role=tool 结果拆进不同的
+    history_v2 行，单行解析时结果侧拿不到工具名，必须按会话先扫一遍。
+    """
+    names: dict[str, str] = {}
+    for raw in raws:
+        if isinstance(raw, bytes):
+            try:
+                raw = raw.decode("utf-8", errors="ignore")
+            except Exception:
+                continue
+        if not isinstance(raw, str):
+            continue
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            continue
+        for m in obj.get("raw_messages") or []:
+            if not isinstance(m, dict):
+                continue
+            for tc in m.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                cid = str(tc.get("id") or "")
+                if not cid:
+                    continue
+                fn = tc.get("function_call") or {}
+                names[cid] = str(fn.get("name") or tc.get("name") or "tool")
+    return names
+
+
+_TRAE_TITLE_SPLIT_RE = re.compile(r"[。！？；!?]")
+
+
+def _trae_title_from_text(text: str) -> str:
+    """把首条用户输入压成一句可读标题。
+
+    取前 3 个非空行拼起来（用户常把路径/对象分几行再提问，只取第一行会变成 `"F:\\rea"`），
+    去掉 markdown 符号与成对引号，再按句号或 48 字截断。
+    """
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()][:3]
+    if not lines:
+        return ""
+    joined = " ".join(ln.strip().strip('"“”') for ln in lines)
+    joined = re.sub(r"[`*#>]+", "", joined).strip()
+    cut = _TRAE_TITLE_SPLIT_RE.split(joined)[0].strip() or joined
+    if len(cut) > 48:
+        cut = cut[:48].rstrip() + "…"
+    return cut
+
+
+def _trae_flatten_messages(raw: Any) -> list[tuple[str, str]]:
+    """兼容旧调用：压成 [(role, text)]（含工具调用/结果文本）。"""
+    return [
+        (it.get("role") or ("tool" if it["kind"] == "tool_result" else "assistant"), it.get("text") or "")
+        for it in _trae_parse_messages(raw)
+        if it.get("text")
+    ]
+
+
+def _trae_ts(epoch: Any) -> str:
+    """epoch 秒 → UTC 字符串（与本文件其它 started_at 口径一致）。"""
+    try:
+        return datetime.fromtimestamp(int(epoch), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
+
+
+def _trae_db_index() -> dict[str, dict[str, Any]]:
+    """聚合解密库 history_v2：每个会话的消息数/字符/token/起止时间/首条用户提问。
+
+    结果按库文件的 (mtime,size) 缓存，避免每次列表请求都全量解析 32k 行 JSON。
+    """
+    _maybe_refresh_trae_plain()
+    if not TRAE_PLAIN_DB.exists():
+        return {}
+    try:
+        st = TRAE_PLAIN_DB.stat()
+    except Exception:
+        return {}
+    sig = f"{int(st.st_mtime)}:{st.st_size}"
+    if _TRAE_DB_CACHE.get("sig") == sig:
+        return _TRAE_DB_CACHE.get("index") or {}
+
+    # 跨进程缓存：32k 行 JSON 全量解析约 6.4 s，落盘后启动只需 ~50 ms。
+    try:
+        if _TRAE_INDEX_CACHE_PATH.exists():
+            cached = json.loads(_TRAE_INDEX_CACHE_PATH.read_text("utf-8"))
+            if isinstance(cached, dict) and cached.get("sig") == sig and isinstance(cached.get("index"), dict):
+                _TRAE_DB_CACHE["sig"] = sig
+                _TRAE_DB_CACHE["index"] = cached["index"]
+                return cached["index"]
+    except Exception:
+        pass
+
+    conn = _trae_db_conn()
+    if conn is None:
+        return {}
+    index: dict[str, dict[str, Any]] = {}
+    try:
+        rows = conn.execute(
+            "select session_id, messages, token_usage, created_at from history_v2 order by created_at, id"
+        ).fetchall()
+    except Exception:
+        rows = []
+    # Trae 自己维护的会话标题（SOLO 任务列表里显示的就是这一份）
+    native_titles: dict[str, str] = {}
+    try:
+        for nsid, ntitle in conn.execute("select session_id, title from fts_session_title"):
+            t = re.sub(r"\s+", " ", str(ntitle or "")).strip()
+            if len(t) > 80:
+                t = t[:79].rstrip() + "…"
+            if t:
+                native_titles[str(nsid)] = t
+    except Exception:
+        native_titles = {}
+    finally:
+        conn.close()
+
+    for sid, raw, tok, ts in rows:
+        items = _trae_parse_messages(raw)
+        if not items:
+            continue
+        agg = index.setdefault(
+            str(sid),
+            {
+                "records": 0,
+                "msgs": 0,
+                "chars": 0,
+                "tokens": 0,
+                "first": "",
+                "last": "",
+                "last_mtime": 0.0,
+                "title": "",
+                "title_ai": "",
+                "upload_hint": "",
+                "native": "",
+            },
+        )
+        agg["records"] += 1
+        # 「步数」沿用旧口径：每条原始消息算一步（工具调用不额外计步）
+        msg_items = [it for it in items if it.get("from_message")]
+        agg["msgs"] += len(msg_items) if msg_items else len(items)
+        agg["tokens"] += int(tok or 0)
+        for it in items:
+            txt = it.get("text") or ""
+            agg["chars"] += len(txt)
+            if it["kind"] != "message":
+                continue
+            head = _trae_title_from_text(txt)
+            if not head:
+                continue
+            if it["role"] == "user" and not agg["title"]:
+                if it.get("is_upload"):
+                    if not agg["upload_hint"]:
+                        agg["upload_hint"] = head
+                else:
+                    agg["title"] = head
+            elif it["role"] == "assistant" and not agg["title_ai"]:
+                agg["title_ai"] = head
+        tstr = _trae_ts(ts)
+        if tstr:
+            if not agg["first"]:
+                agg["first"] = tstr
+            agg["last"] = tstr
+        try:
+            agg["last_mtime"] = max(agg["last_mtime"], float(ts or 0))
+        except Exception:
+            pass
+
+    # 标题优先级：Trae 原生标题 > 人话（首条用户输入）> 首条助手回复 > 上传文件名
+    for sid, agg in index.items():
+        agg["native"] = native_titles.get(sid, "")
+        if agg["native"]:
+            agg["title"] = agg["native"]
+        elif not agg["title"]:
+            agg["title"] = agg["title_ai"] or agg["upload_hint"]
+
+    _TRAE_DB_CACHE["sig"] = sig
+    _TRAE_DB_CACHE["index"] = index
+    try:
+        _TRAE_INDEX_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _TRAE_INDEX_CACHE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"sig": sig, "index": index}, ensure_ascii=False), "utf-8")
+        tmp.replace(_TRAE_INDEX_CACHE_PATH)
+    except Exception:
+        pass
+    return index
+
+
+def _trae_db_messages(sid: str) -> list[dict[str, Any]]:
+    """按会话取完整正文（解密库是唯一有 assistant 正文的来源）。"""
+    if not sid:
+        return []
+    conn = _trae_db_conn()
+    if conn is None:
+        return []
+    try:
+        rows = conn.execute(
+            "select messages, created_at from history_v2 where session_id = ? order by created_at, id",
+            (sid,),
+        ).fetchall()
+    except Exception:
+        rows = []
+    finally:
+        conn.close()
+
+    events: list[dict[str, Any]] = []
+    call_names = _trae_collect_call_names([raw for raw, _ in rows])
+    for raw, ts in rows:
+        tstr = _trae_ts(ts)
+        for it in _trae_parse_messages(raw, call_names):
+            kind = it["kind"]
+            if kind == "message":
+                events.append({
+                    "kind": "message", "role": it["role"], "timestamp": tstr,
+                    "text": it["text"], "tool_name": "", "tool_call_id": "", "payload": None,
+                })
+            elif kind == "tool_call":
+                events.append({
+                    "kind": "tool_call", "role": "assistant", "timestamp": tstr,
+                    "text": it["text"], "tool_name": it["tool_name"],
+                    "tool_call_id": it["tool_call_id"], "payload": {"input": it["input"]},
+                })
+            elif kind == "tool_result":
+                events.append({
+                    "kind": "tool_result", "role": "tool", "timestamp": tstr,
+                    "text": it["text"], "tool_name": it["tool_name"],
+                    "tool_call_id": it["tool_call_id"],
+                    "payload": {"is_error": bool(it.get("is_error"))},
+                })
+    return events
+
+
 def get_trae_sessions() -> list[dict[str, Any]]:
     import urllib.parse
     base_user_dirs = [
-        ("trae", Path(r"C:\Users\HP\AppData\Roaming\Trae CN\User")),
-        ("trae_solo", Path(r"C:\Users\HP\AppData\Roaming\TRAE SOLO CN\User")),
+        ("trae", _roaming_path("Trae CN", "User")),
+        ("trae_solo", _roaming_path("TRAE SOLO CN", "User")),
     ]
-    mem_dir = Path(r"C:\Users\HP\.trae-cn\memory\projects")
+    mem_dir = _home_path(".trae-cn", "memory", "projects")
     results = []
     sessions_map: dict[str, dict[str, Any]] = {}
 
@@ -2139,16 +3134,17 @@ def get_trae_sessions() -> list[dict[str, Any]]:
                             s["records"] = max(s["records"], int(data["messagesLength"]))
                         res_list = data.get("response", {}).get("resp", {}).get("result", []) or data.get("response", {}).get("result", [])
                         if res_list and isinstance(res_list, list):
+                            # 注意：ai-chat.chatQueryCompletion 存的是 Trae 为输入框生成的
+                            # 「猜你想问」候选追问，并不是用户真实提问，也不是会话标题。
+                            # 因此这里只用于记录数/时间戳兜底，绝不能当标题或正文展示。
                             s["records"] = max(s["records"], len(res_list))
                             for item in res_list:
                                 if item.get("text"):
                                     txt = item["text"].strip()
                                     s["chat_text_buf"].append(txt)
-                                    if not s["title"]:
-                                        s["title"] = txt.splitlines()[0][:80]
-                                        item_id = item.get("id", "")
-                                        if len(item_id) >= 8 and item_id.startswith("202") and not s["started_at"]:
-                                            s["started_at"] = f"{item_id[:4]}-{item_id[4:6]}-{item_id[6:8]} {item_id[8:10]}:{item_id[10:12]}:{item_id[12:14]}"
+                                    item_id = item.get("id", "")
+                                    if len(item_id) >= 8 and item_id.startswith("202") and not s["started_at"]:
+                                        s["started_at"] = f"{item_id[:4]}-{item_id[4:6]}-{item_id[6:8]} {item_id[8:10]}:{item_id[10:12]}:{item_id[12:14]}"
                                     break
                     except Exception:
                         pass
@@ -2241,9 +3237,97 @@ def get_trae_sessions() -> list[dict[str, Any]]:
                         s["file_path"] = str(db_file)
                     s["mtime"] = max(s["mtime"], db_mtime)
 
+                # F. Check memento/icube-ai-agent-storage (post-2026-10-12 workspace session list)
+                ws_current_sid = ""
+                ws_memento_sids: list[str] = []
+                cursor.execute("SELECT value FROM ItemTable WHERE key = 'memento/icube-ai-agent-storage'")
+                m_row = cursor.fetchone()
+                if m_row and m_row[0]:
+                    m_val = m_row[0].decode("utf-8", errors="ignore") if isinstance(m_row[0], bytes) else str(m_row[0])
+                    try:
+                        m_data = json.loads(m_val)
+                        if isinstance(m_data, dict):
+                            ws_current_sid = str(m_data.get("currentSessionId") or "").strip()
+                            for item in (m_data.get("list") or []):
+                                if not isinstance(item, dict):
+                                    continue
+                                m_sid = str(item.get("sessionId") or "").strip()
+                                if not m_sid or len(m_sid) < 16:
+                                    continue
+                                ws_memento_sids.append(m_sid)
+                                s = get_or_create(m_sid)
+                                s["has_memento"] = True
+                                s["all_files"].add(str(db_file))
+                                if not s["file_path"]:
+                                    s["file_path"] = str(db_file)
+                                s["mtime"] = max(s["mtime"], db_mtime)
+                                if ws_folder and not s["workspace"]:
+                                    s["workspace"] = ws_folder
+                                if item.get("isCurrent") and not ws_current_sid:
+                                    ws_current_sid = m_sid
+                    except Exception:
+                        pass
+
+                # G. Check icube-ai-agent-storage-input-history (real user prompts in workspace)
+                cursor.execute("SELECT value FROM ItemTable WHERE key = 'icube-ai-agent-storage-input-history'")
+                ih_row = cursor.fetchone()
+                if ih_row and ih_row[0]:
+                    ih_val = ih_row[0].decode("utf-8", errors="ignore") if isinstance(ih_row[0], bytes) else str(ih_row[0])
+                    try:
+                        ih_list = json.loads(ih_val)
+                        if isinstance(ih_list, list) and ih_list:
+                            texts = [
+                                str(it.get("inputText") or "").strip()
+                                for it in ih_list
+                                if isinstance(it, dict) and str(it.get("inputText") or "").strip()
+                            ]
+                            if texts:
+                                target_sid = ws_current_sid or (ws_memento_sids[0] if ws_memento_sids else f"ws_{db_file.parent.name[:16]}")
+                                s = get_or_create(target_sid)
+                                s["has_memento"] = True
+                                s["input_history_db"] = str(db_file)
+                                s["all_files"].add(str(db_file))
+                                if not s["file_path"]:
+                                    s["file_path"] = str(db_file)
+                                s["mtime"] = max(s["mtime"], db_mtime)
+                                if ws_folder and not s["workspace"]:
+                                    s["workspace"] = ws_folder
+                                s["records"] = max(s["records"], len(texts))
+                                s["bytes"] += sum(len(t.encode("utf-8", errors="ignore")) for t in texts)
+                                s["chat_text_buf"].extend(texts)
+                                if not s["title"]:
+                                    s["title"] = clean_human_title(texts[-1]) or texts[-1][:40]
+                    except Exception:
+                        pass
+
                 conn.close()
             except Exception:
                 pass
+
+    # 2.5 解密后的 Trae 库（history_v2）：补齐只有库里有正文的会话
+    for sid, agg in _trae_db_index().items():
+        s = get_or_create(sid)
+        s["has_db"] = True
+        s["db_records"] = agg["records"]
+        s["db_tokens"] = agg["tokens"]
+        s["records"] = max(s["records"], agg["msgs"])
+        s["bytes"] = max(s["bytes"], agg["chars"])
+        # “最近活跃”取会话自己最后一条 history_v2 记录的时间，而不是解密库
+        # 文件的 mtime。否则所有 Trae 会话会共用同一个库文件 mtime，排序退化成
+        # 插入顺序，最新活跃的会话反而沉底。
+        if float(agg.get("last_mtime") or 0) > 0:
+            s["mtime"] = float(agg["last_mtime"])
+        if not s["file_path"]:
+            s["file_path"] = str(TRAE_PLAIN_DB)
+        if not s["all_files"]:
+            s["all_files"].add(str(TRAE_PLAIN_DB))
+        if not s["title"] and agg["title"]:
+            s["title"] = agg["title"]
+        elif agg.get("native"):
+            # Trae 库里有官方标题时以它为准（与 SOLO 任务列表一致）
+            s["title"] = agg["native"]
+        if agg["first"] and (not s["started_at"] or agg["first"] < s["started_at"]):
+            s["started_at"] = agg["first"]
 
     # 3. Assemble and calculate tokens for all sessions
     for sid, s in sessions_map.items():
@@ -2251,11 +3335,32 @@ def get_trae_sessions() -> list[dict[str, Any]]:
         # chatQueryCompletion 的壳记录：没有标题、没有正文、0 步 0 字节。
         # 另有一类 20~74 步但正文不足 1KB 的记录，同样只是工作区标签残留。
         # 它们既无法查看也无法迁移，直接跳过，避免污染列表和统计。
-        has_text = any(t and t.strip() for t in s["chat_text_buf"])
-        if not s["title"].strip() and not has_text and s["bytes"] < 1024:
+        has_jsonl = any("session_memory_" in f for f in s["all_files"])
+        has_ih = bool(s.get("input_history_db"))
+        has_db = bool(s.get("has_db"))
+        if not has_jsonl and not has_ih and not has_db:
             continue
-        fp = Path(s["file_path"]) if s["file_path"] else Path(r"C:\Users\HP\AppData\Roaming\Trae CN\User\globalStorage\state.vscdb")
+        fp = Path(s["file_path"]) if s["file_path"] else _roaming_path("Trae CN", "User", "globalStorage", "state.vscdb")
         mtime = s["mtime"] if s["mtime"] > 0 else (fp.stat().st_mtime if fp.exists() else time.time())
+        if not s["started_at"] and re.fullmatch(r"[0-9a-f]{24}", sid):
+            try:
+                obj_ts = int(sid[:8], 16)
+                if 1700000000 <= obj_ts <= 1950000000:
+                    s["started_at"] = datetime.fromtimestamp(obj_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+        # 没有解密库正文、也没有 session_memory 的会话，只能从 state.vscdb
+        # 取得时间；同一个 state.vscdb 的 mtime 对所有会话都一样。此时改用
+        # 会话自己的 started_at，避免“工作区提问历史”这类旧条目被文件 mtime
+        # 抬到最新活跃的位置。
+        if not has_db and not has_jsonl and s["started_at"]:
+            try:
+                s["mtime"] = datetime.strptime(
+                    s["started_at"].strip(), "%Y-%m-%d %H:%M:%S"
+                ).replace(tzinfo=timezone.utc).timestamp()
+                mtime = s["mtime"]
+            except (TypeError, ValueError):
+                pass
         date_str = ""
         if s["started_at"]:
             date_str = s["started_at"][:10]
@@ -2264,13 +3369,24 @@ def get_trae_sessions() -> list[dict[str, Any]]:
             s["started_at"] = f"{date_str} 12:00:00"
 
         title_raw = s["title"].strip()
-        if not title_raw:
-            sub = s["workspace"] or s["model"] or s["mode"] or sid[:8]
-            title_raw = f"Trae 会话 ({sub})"
+        if not has_jsonl and has_ih and not has_db:
+            ws_label = s["workspace"] or sid[:8]
+            title_raw = f"Trae 工作区提问历史 ({ws_label}) · {max(1, s['records'])} 条"
+        elif not title_raw:
+            sub = s["workspace"] or s["model"] or s["mode"]
+            if sub:
+                title_raw = f"Trae 会话 ({sub} · {sid[:8]})"
+            else:
+                title_raw = f"Trae 会话 ({sid[:8]})"
 
         t_chat = sum(estimate_text_tokens(txt) for txt in s["chat_text_buf"])
         t_tot = max(t_chat, estimate_text_tokens(" ".join(s["chat_text_buf"])) + int(s["raw_json_len"] * 0.15))
         t_aux = max(0, t_tot - t_chat)
+        # 解密库里有模型侧记录的 token_usage，优先用真实值而非估算
+        if has_db and int(s.get("db_tokens") or 0) > 0:
+            t_chat = int(s["db_tokens"])
+            t_tot = t_chat
+            t_aux = 0
 
         trae_tok = compute_session_tokens(
             "trae",
@@ -2297,6 +3413,10 @@ def get_trae_sessions() -> list[dict[str, Any]]:
             "model": s["model"],
             "mode": s["mode"],
             "workspace": s["workspace"],
+            "input_history_db": s.get("input_history_db", ""),
+            "has_db": has_db,
+            "db_records": int(s.get("db_records") or 0),
+            "db_tokens": int(s.get("db_tokens") or 0),
             "exists": True,
             "mtime": mtime,
         })
@@ -2308,6 +3428,13 @@ def get_trae_session_messages(session_match: dict[str, Any]) -> list[dict[str, A
     events = []
     sid = session_match.get("session_id", "")
     all_files = session_match.get("all_files", []) or [session_match.get("file_path", "")]
+
+    # 0. 优先用解密库（history_v2 有完整的 assistant 正文与工具结果；
+    #    memory jsonl 只有 intent/outcome 摘要，state.vscdb 只有提问残片）
+    if sid and (session_match.get("has_db") or _trae_db_index().get(sid)):
+        db_events = _trae_db_messages(sid)
+        if db_events:
+            return db_events
     
     # 1. From session_memory jsonl
     for fp in all_files:
@@ -2333,11 +3460,22 @@ def get_trae_session_messages(session_match: dict[str, Any]) -> list[dict[str, A
                     outcome = entry.get("outcome", "").strip()
                     actions = entry.get("actions", [])
                     learned = entry.get("learned", [])
+                    if actions and isinstance(actions, list):
+                        for act in actions:
+                            act_str = str(act).strip()
+                            if act_str:
+                                events.append({
+                                    "kind": "tool_call",
+                                    "role": "assistant",
+                                    "timestamp": t_str,
+                                    "text": act_str,
+                                    "tool_name": "trae_action",
+                                    "tool_call_id": "",
+                                    "payload": None,
+                                })
                     resp_parts = []
                     if outcome:
                         resp_parts.append(outcome)
-                    if actions and isinstance(actions, list):
-                        resp_parts.append("\n**执行动作：**\n" + "\n".join(f"- {a}" for a in actions))
                     if learned and isinstance(learned, list):
                         resp_parts.append("\n**习得知识与经验：**\n" + "\n".join(f"- {l}" for l in learned))
                     if resp_parts:
@@ -2352,41 +3490,35 @@ def get_trae_session_messages(session_match: dict[str, Any]) -> list[dict[str, A
             except Exception:
                 pass
 
-    # 2. From state.vscdb
-    for fp in all_files:
-        p = Path(fp)
-        if p.name == "state.vscdb" and p.exists():
+    # 2. 如果没有 .jsonl 记忆文件，但该会话关联了工作区的 icube-ai-agent-storage-input-history，
+    #    从 state.vscdb 读取真实用户提问记录（模型回复仍在 SQLCipher 加密库中）。
+    if not events and session_match.get("input_history_db"):
+        ih_db = Path(str(session_match["input_history_db"]))
+        if ih_db.exists():
             try:
-                with sqlite3.connect(f"file:{p}?mode=ro", uri=True) as db:
-                    rows = db.execute("SELECT value FROM ItemTable WHERE key LIKE ?", (f"%{sid}%",)).fetchall()
-                    for (val,) in rows:
-                        if isinstance(val, bytes):
-                            val = val.decode("utf-8", errors="ignore")
-                        try:
-                            data = json.loads(val)
-                            res_list = data.get("response", {}).get("resp", {}).get("result", []) or data.get("response", {}).get("result", [])
-                            if res_list and isinstance(res_list, list):
-                                for item in res_list:
-                                    txt = (item.get("text") or "").strip()
-                                    if not txt:
-                                        continue
-                                    # 角色必须来自数据本身，不能靠奇偶猜：Trae 的
-                                    # ai-chat.chatQueryCompletion.* 存的全是用户历史提问
-                                    item_role = str(item.get("role") or item.get("type") or "").lower()
-                                    if item_role in {"assistant", "ai", "bot", "model", "answer"} or item.get("isUser") is False:
-                                        role = "assistant"
-                                    else:
-                                        role = "user"
-                                    events.append({
-                                        "kind": "message",
-                                        "role": role,
-                                        "timestamp": "",
-                                        "text": txt,
-                                        "tool_name": "",
-                                        "payload": None,
-                                    })
-                        except Exception:
-                            pass
+                conn = sqlite3.connect(f"file:{ih_db}?mode=ro", uri=True)
+                row = conn.execute(
+                    "SELECT value FROM ItemTable WHERE key = 'icube-ai-agent-storage-input-history'"
+                ).fetchone()
+                conn.close()
+                if row and row[0]:
+                    raw_val = row[0].decode("utf-8", errors="ignore") if isinstance(row[0], bytes) else str(row[0])
+                    items = json.loads(raw_val)
+                    if isinstance(items, list):
+                        for item in items:
+                            if not isinstance(item, dict):
+                                continue
+                            txt = str(item.get("inputText") or "").strip()
+                            if not txt:
+                                continue
+                            events.append({
+                                "kind": "message",
+                                "role": "user",
+                                "timestamp": session_match.get("started_at", ""),
+                                "text": txt,
+                                "tool_name": "",
+                                "payload": None,
+                            })
             except Exception:
                 pass
 
@@ -2414,6 +3546,775 @@ def get_trae_session_messages(session_match: dict[str, Any]) -> list[dict[str, A
             "tool_name": "",
             "payload": None,
         })
+
+    return events
+
+
+def _doubao_clean_prompt_title(text: str) -> str:
+    """从豆包 Agent Mode 首条用户消息提取可读标题。"""
+    if not text:
+        return ""
+    cleaned = re.sub(r"\[([^\]]+)\]\(<[^>]+>\)", r"\1", text)
+    return clean_human_title(cleaned) or cleaned.strip()[:40]
+
+
+def _doubao_read_varint(buf: bytes, pos: int) -> tuple[int, int]:
+    val = 0
+    shift = 0
+    n = len(buf)
+    while pos < n:
+        b = buf[pos]
+        pos += 1
+        val |= (b & 0x7F) << shift
+        if not (b & 0x80):
+            return val, pos
+        shift += 7
+    return val, pos
+
+
+def _doubao_snappy_decompress(data: bytes) -> bytes:
+    """纯 Python Snappy 解压（用于读取 Chromium IndexedDB LevelDB 数据块）。"""
+    pos = 0
+    n = len(data)
+    ulen, pos = _doubao_read_varint(data, pos)
+    if ulen > 16 * 1024 * 1024 or pos >= n:
+        raise ValueError("invalid snappy stream")
+    out = bytearray()
+    while pos < n:
+        tag = data[pos]
+        pos += 1
+        kind = tag & 0x03
+        if kind == 0:
+            length = (tag >> 2) + 1
+            if length > 60:
+                extra = length - 60
+                if pos + extra > n:
+                    raise ValueError("snappy literal oob")
+                length = int.from_bytes(data[pos:pos + extra], "little") + 1
+                pos += extra
+            if pos + length > n:
+                raise ValueError("snappy literal oob")
+            out.extend(data[pos:pos + length])
+            pos += length
+        else:
+            if kind == 1:
+                if pos >= n:
+                    raise ValueError("snappy copy1 oob")
+                length = ((tag >> 2) & 0x07) + 4
+                offset = ((tag & 0xE0) << 3) | data[pos]
+                pos += 1
+            elif kind == 2:
+                if pos + 2 > n:
+                    raise ValueError("snappy copy2 oob")
+                length = (tag >> 2) + 1
+                offset = int.from_bytes(data[pos:pos + 2], "little")
+                pos += 2
+            else:
+                if pos + 4 > n:
+                    raise ValueError("snappy copy4 oob")
+                length = (tag >> 2) + 1
+                offset = int.from_bytes(data[pos:pos + 4], "little")
+                pos += 4
+            if offset == 0 or offset > len(out):
+                raise ValueError("snappy bad offset")
+            for _ in range(length):
+                out.append(out[-offset])
+    if len(out) != ulen:
+        raise ValueError("snappy length mismatch")
+    return bytes(out)
+
+
+def _doubao_iter_idb_blobs(idb_dir: Path) -> list[bytes]:
+    """读取 Chromium IndexedDB LevelDB（.ldb + .log）并尝试 Snappy 解压值。"""
+    import struct as _struct
+
+    blobs: list[bytes] = []
+    if not idb_dir.exists():
+        return blobs
+
+    def _try_dec(val: bytes) -> bytes:
+        for off in range(min(12, len(val))):
+            try:
+                return _doubao_snappy_decompress(val[off:])
+            except Exception:
+                pass
+        return val
+
+    for ldb_file in sorted(idb_dir.glob("*.ldb")):
+        try:
+            raw = ldb_file.read_bytes()
+            if len(raw) < 48 or raw[-8:] != b"\x57\xfb\x80\x8b\x24\x75\x47\xdb":
+                continue
+            footer = raw[-48:]
+            p = 0
+            _, p = _doubao_read_varint(footer, p)
+            _, p = _doubao_read_varint(footer, p)
+            idx_off, p = _doubao_read_varint(footer, p)
+            idx_size, p = _doubao_read_varint(footer, p)
+
+            def _read_blk(off: int, size: int) -> bytes:
+                blk = raw[off:off + size]
+                return _doubao_snappy_decompress(blk) if raw[off + size] == 1 else blk
+
+            def _iter_kv(blk: bytes):
+                num_restarts = _struct.unpack_from("<I", blk, len(blk) - 4)[0]
+                data_end = len(blk) - 4 - num_restarts * 4
+                q = 0
+                out = []
+                while q < data_end:
+                    _, q = _doubao_read_varint(blk, q)
+                    un, q = _doubao_read_varint(blk, q)
+                    vl, q = _doubao_read_varint(blk, q)
+                    q += un
+                    v = blk[q:q + vl]
+                    q += vl
+                    out.append(v)
+                return out
+
+            idx_blk = _read_blk(idx_off, idx_size)
+            for h in _iter_kv(idx_blk):
+                hp = 0
+                boff, hp = _doubao_read_varint(h, hp)
+                bsize, hp = _doubao_read_varint(h, hp)
+                for v in _iter_kv(_read_blk(boff, bsize)):
+                    blobs.append(_try_dec(v))
+        except Exception:
+            continue
+
+    for log_file in sorted(idb_dir.glob("*.log")):
+        try:
+            raw = log_file.read_bytes()
+            pos = 0
+            block_size = 32768
+            buf = bytearray()
+            recs: list[bytes] = []
+            while pos + 7 <= len(raw):
+                in_b = pos % block_size
+                if block_size - in_b < 7:
+                    pos += block_size - in_b
+                    continue
+                _, length, rtype = _struct.unpack_from("<IHB", raw, pos)
+                pos += 7
+                if pos + length > len(raw) or rtype == 0:
+                    break
+                chunk = raw[pos:pos + length]
+                pos += length
+                if rtype == 1:
+                    recs.append(chunk)
+                elif rtype == 2:
+                    buf = bytearray(chunk)
+                elif rtype == 3:
+                    buf.extend(chunk)
+                elif rtype == 4:
+                    buf.extend(chunk)
+                    recs.append(bytes(buf))
+                    buf = bytearray()
+            for rec in recs:
+                if len(rec) < 12:
+                    continue
+                p = 12
+                while p < len(rec):
+                    vt = rec[p]
+                    p += 1
+                    kl, p = _doubao_read_varint(rec, p)
+                    p += kl
+                    if vt == 1:
+                        vl, p = _doubao_read_varint(rec, p)
+                        v = rec[p:p + vl]
+                        p += vl
+                        blobs.append(_try_dec(v))
+        except Exception:
+            continue
+
+    return blobs
+
+
+def _doubao_extract_idb_sessions(idb_dir: Path) -> list[dict[str, Any]]:
+    """从豆包 IndexedDB 中提取最近对话列表及已缓存的同步消息。"""
+    blobs = _doubao_iter_idb_blobs(idb_dir)
+    if not blobs:
+        return []
+
+    conv_map: dict[str, dict[str, Any]] = {}
+    conv_blobs = [b for b in blobs if b"conversation-list-data" in b]
+    if conv_blobs:
+        blob = max(conv_blobs, key=len)
+        for m in re.finditer(rb'\x0fconversation_id".([0-9]{10,25})', blob):
+            cid = m.group(1).decode("ascii", errors="ignore")
+            window = blob[m.end():m.end() + 2400]
+            title = ""
+            nm = re.search(rb'\x04name\x00?', window)
+            if nm:
+                pos = nm.end()
+                tag = window[pos] if pos < len(window) else 0
+                if tag == 0x63:
+                    blen, q = _doubao_read_varint(window, pos + 1)
+                    if 2 <= blen <= 400 and q + blen <= len(window):
+                        title = window[q:q + blen].decode("utf-16-le", errors="ignore").strip()
+                elif tag == 0x22:
+                    blen, q = _doubao_read_varint(window, pos + 1)
+                    if 1 <= blen <= 300 and q + blen <= len(window):
+                        title = window[q:q + blen].decode("latin1", errors="ignore").strip()
+            ts_val = 0
+            tm = re.search(rb'update_time".([0-9]{10,13})', window) or re.search(rb'create_time".([0-9]{10,13})', window)
+            if tm:
+                ts_val = int(tm.group(1))
+                if ts_val > 1e12:
+                    ts_val //= 1000
+            if cid not in conv_map or (title and not conv_map[cid]["title"]):
+                conv_map[cid] = {"cid": cid, "title": title, "ts": ts_val, "cached_msgs": []}
+
+    # 补充解析 mainTaskDataMap 中的已缓存用户消息文本与附件名
+    msg_blobs = [b for b in blobs if b"mainTaskDataMap" in b and b"messages" in b]
+    if msg_blobs:
+        mblob = msg_blobs[-1]
+        cm = re.search(rb'conversation_id".([0-9]{10,25})', mblob)
+        mcid = cm.group(1).decode("ascii", errors="ignore") if cm else ""
+        texts: list[str] = []
+        for tm in re.finditer(rb'text_blocko".\x04text\x00?', mblob):
+            pos = tm.end()
+            if pos < len(mblob):
+                tag = mblob[pos]
+                if tag == 0x63:
+                    blen, q = _doubao_read_varint(mblob, pos + 1)
+                    if 2 <= blen <= 32768 and q + blen <= len(mblob):
+                        t = mblob[q:q + blen].decode("utf-16-le", errors="ignore").strip()
+                        if t and t not in texts:
+                            texts.append(t)
+                elif tag == 0x22:
+                    blen, q = _doubao_read_varint(mblob, pos + 1)
+                    if 2 <= blen <= 16384 and q + blen <= len(mblob):
+                        t = mblob[q:q + blen].decode("latin1", errors="ignore").strip()
+                        if t and t not in texts:
+                            texts.append(t)
+        if mcid and mcid in conv_map and texts:
+            conv_map[mcid]["cached_msgs"] = texts
+
+    return list(conv_map.values())
+
+
+def get_doubao_sessions() -> list[dict[str, Any]]:
+    """扫描本地豆包（Doubao）会话：Agent Mode 轨迹、Coding 快照与工作区产物。"""
+    results: list[dict[str, Any]] = []
+    seen_sids: set[str] = set()
+
+    local_app = LOCAL_APPDATA
+    user_home = USERPROFILE
+
+    # 1. Doubao Agent Mode: trajectory.jsonl + assignment.md
+    agent_sessions_dir = local_app / "Doubao" / "User Data" / "Default" / ".doubao" / "agent_mode" / "workspace" / ".sessions"
+    if agent_sessions_dir.exists():
+        for sess_dir in sorted(agent_sessions_dir.iterdir()):
+            if not sess_dir.is_dir():
+                continue
+            sid = sess_dir.name
+            agents_dir = sess_dir / "agents"
+            if not agents_dir.exists():
+                continue
+            for traj in sorted(agents_dir.glob("*/system/trajectory.jsonl")):
+                try:
+                    st = traj.stat()
+                    if st.st_size == 0:
+                        continue
+                except OSError:
+                    continue
+                assign_path = traj.parent / "assignment.md"
+                started_at = ""
+                title = ""
+                records = 0
+                first_user_text = ""
+                try:
+                    with open(traj, "r", encoding="utf-8", errors="ignore") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            records += 1
+                            if not first_user_text:
+                                try:
+                                    obj = json.loads(line)
+                                    if obj.get("role") == "user":
+                                        c = obj.get("content")
+                                        if isinstance(c, str) and c.strip():
+                                            first_user_text = c.strip()
+                                except Exception:
+                                    pass
+                except Exception:
+                    continue
+
+                if assign_path.exists():
+                    try:
+                        assign_txt = assign_path.read_text(encoding="utf-8", errors="ignore")
+                        m_ts = re.search(r"Created:\s*([0-9T:\-.Z]+)", assign_txt) or re.search(r"##\s*\[([0-9T:\-.Z]+)\]", assign_txt)
+                        if m_ts:
+                            started_at = _ag_local_time_str(m_ts.group(1))
+                    except Exception:
+                        pass
+
+                if not started_at:
+                    started_at = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                title = _doubao_clean_prompt_title(first_user_text) or f"豆包 Agent 会话 ({sid[:8]})"
+                total_bytes = st.st_size + (assign_path.stat().st_size if assign_path.exists() else 0)
+                tok = compute_session_tokens("doubao", sid, traj, st.st_mtime, total_bytes)
+                seen_sids.add(sid)
+                results.append({
+                    "catalog_id": f"db_{sid[:16]}",
+                    "format": "doubao",
+                    "session_id": sid,
+                    "title": title,
+                    "started_at": started_at,
+                    "records": max(1, records),
+                    "bytes": total_bytes,
+                    **_token_fields(tok),
+                    "file_path": str(traj),
+                    "all_files": [str(traj)] + ([str(assign_path)] if assign_path.exists() else []),
+                    "account": "",
+                    "model": "",
+                    "mode": "agent_mode",
+                    "workspace": "",
+                    "source_kind": "agent_mode",
+                    "exists": True,
+                    "mtime": st.st_mtime,
+                })
+                break
+
+    # 2. Doubao Coding Snapshots
+    snap_root = local_app / "Doubao" / "User Data" / "coding" / "snapshot"
+    if snap_root.exists():
+        for snap_file in sorted(snap_root.glob("*/*/*/*.json")):
+            try:
+                st = snap_file.stat()
+                data = json.loads(snap_file.read_text(encoding="utf-8", errors="ignore"))
+            except Exception:
+                continue
+            exe = data.get("execution") if isinstance(data, dict) else None
+            if not isinstance(exe, dict):
+                continue
+            cid = str(exe.get("conversationId") or snap_file.parent.parent.name).strip()
+            if not cid or cid in seen_sids:
+                continue
+            seen_sids.add(cid)
+            files_list = data.get("files") if isinstance(data.get("files"), list) else []
+            started_raw = str(exe.get("startedAtFormatted") or "").replace("/", "-").strip()
+            started_at = started_raw or datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            title = f"豆包 Coding ({cid[-8:]}) · {len(files_list)} 个文件快照"
+            tok = compute_session_tokens("doubao", cid, snap_file, st.st_mtime, st.st_size)
+            results.append({
+                "catalog_id": f"db_{cid[:16]}",
+                "format": "doubao",
+                "session_id": cid,
+                "title": title,
+                "started_at": started_at,
+                "records": max(1, len(files_list)),
+                "bytes": st.st_size,
+                **_token_fields(tok),
+                "file_path": str(snap_file),
+                "all_files": [str(snap_file)],
+                "account": str(exe.get("userId") or ""),
+                "model": "",
+                "mode": "coding_snapshot",
+                "workspace": "",
+                "source_kind": "coding_snapshot",
+                "exists": True,
+                "mtime": st.st_mtime,
+            })
+
+    # 3. Doubao Chats Workspace artifacts
+    chats_root = user_home / "Doubao" / "chats"
+    if chats_root.exists():
+        for date_dir in sorted(chats_root.iterdir()):
+            if not date_dir.is_dir():
+                continue
+            for chat_dir in sorted(date_dir.iterdir()):
+                if not chat_dir.is_dir():
+                    continue
+                files_in_dir = [p for p in sorted(chat_dir.rglob("*")) if p.is_file()]
+                if not files_in_dir:
+                    continue
+                rel = f"{date_dir.name}/{chat_dir.name}"
+                sid = f"chat_{hashlib.md5(rel.encode('utf-8')).hexdigest()[:12]}"
+                if sid in seen_sids:
+                    continue
+                seen_sids.add(sid)
+                total_bytes = sum(p.stat().st_size for p in files_in_dir)
+                latest_mtime = max(p.stat().st_mtime for p in files_in_dir)
+                started_at = datetime.fromtimestamp(latest_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                primary = next((p for p in files_in_dir if p.suffix.lower() == ".md"), files_in_dir[0])
+                title = f"{date_dir.name} · {primary.stem}"
+                tok = compute_session_tokens("doubao", sid, primary, latest_mtime, total_bytes)
+                results.append({
+                    "catalog_id": f"db_{sid[:16]}",
+                    "format": "doubao",
+                    "session_id": sid,
+                    "title": title,
+                    "started_at": started_at,
+                    "records": len(files_in_dir),
+                    "bytes": total_bytes,
+                    **_token_fields(tok),
+                    "file_path": str(chat_dir),
+                    "all_files": [str(p) for p in files_in_dir[:20]],
+                    "account": "",
+                    "model": "",
+                    "mode": "chat_workspace",
+                    "workspace": str(chat_dir),
+                    "source_kind": "chat_workspace",
+                    "exists": True,
+                    "mtime": latest_mtime,
+                })
+
+    # 4. 豆包云端同步仓（完整会话正文；优先于本地 IndexedDB 元数据）
+    cloud_data = doubao_cloud.load()
+    for cid, item in sorted(
+        cloud_data.items(), key=lambda kv: (kv[1].get("ts") or 0), reverse=True
+    ):
+        cid = str(cid)
+        msg_list = item.get("messages") or []
+        text_msgs = [
+            m for m in msg_list
+            if m.get("kind", "message") == "message" and str(m.get("text") or "").strip()
+        ]
+        if not text_msgs:
+            continue
+        # 云端正文优先：同 cid 的 Coding Snapshot / Agent Mode 摘要不再重复展示
+        prev = next((r for r in results if str(r.get("session_id")) == cid), None)
+        if prev is not None:
+            try:
+                results.remove(prev)
+            except ValueError:
+                pass
+        seen_sids.add(cid)
+        ts = item.get("ts") or 0
+        started_at = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else ""
+        title = str(item.get("title") or f"豆包对话 ({cid[-8:]})")
+        total_bytes = max(
+            128, sum(len(str(m.get("text") or "").encode("utf-8", errors="ignore")) for m in msg_list)
+        )
+        tok = compute_session_tokens(
+            "doubao", cid, Path(item.get("file") or item.get("dir") or ""), ts, total_bytes
+        )
+        results.append({
+            "catalog_id": f"db_{cid[:16]}",
+            "format": "doubao",
+            "session_id": cid,
+            "title": title,
+            "started_at": started_at,
+            "records": max(1, len(msg_list)),
+            "bytes": total_bytes,
+            **_token_fields(tok),
+            "file_path": item.get("file") or item.get("dir") or "",
+            "all_files": [item.get("file") or item.get("dir") or ""],
+            "account": "",
+            "model": "",
+            "mode": "chat_cloud",
+            "workspace": "",
+            "source_kind": "cloud",
+            "cached_msgs": [],
+            "exists": True,
+            "mtime": ts,
+        })
+
+    # 5. Doubao Chat IndexedDB（遍历所有 profile：Default / Profile 1 ...）
+    doubao_user_data = local_app / "Doubao" / "User Data"
+    idb_data = doubao_idb.load(doubao_user_data)
+    idb_mtime = 0.0
+    for idb_dir in doubao_idb.leveldb_dirs(doubao_user_data):
+        for p in idb_dir.glob("*"):
+            if p.is_file():
+                try:
+                    idb_mtime = max(idb_mtime, p.stat().st_mtime)
+                except OSError:
+                    continue
+    existing_by_sid = {
+        str(r.get("session_id") or ""): r for r in results if r.get("format") == "doubao"
+    }
+    for cid, item in sorted(idb_data.items(), key=lambda kv: (kv[1].get("ts") or 0), reverse=True):
+        if str(cid) in seen_sids:
+            continue
+        msg_list = item.get("messages") or []
+        cached_msgs = [
+            m["text"] for m in msg_list
+            if m.get("kind", "message") == "message" and m.get("text")
+        ]
+        prev = existing_by_sid.get(cid)
+        if prev is not None:
+            # IDB 里有真实对话就以它为准；Coding Snapshot 只是产物摘要
+            if not cached_msgs:
+                continue
+            try:
+                results.remove(prev)
+            except ValueError:
+                continue
+        # 纯 IndexedDB 元数据占位：只有标题、没有任何任务态正文。
+        # 这类记录在云端也没有可取的 message_list（实测按 ID 拉取为 0），
+        # 默认不进入会话列表，避免以“0 步 / 空会话”盖住真正有正文的会话。
+        # 源文件不删除；需要排查时可显式设置 DOUBAO_INCLUDE_EMPTY_IDB=1。
+        if not cached_msgs and os.environ.get("DOUBAO_INCLUDE_EMPTY_IDB", "0") != "1":
+            continue
+        seen_sids.add(cid)
+        ts = item.get("ts") or idb_mtime
+        started_at = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else ""
+        title = item.get("title") or f"豆包对话 ({cid[-8:]})"
+        total_bytes = max(128, sum(len(t.encode("utf-8", errors="ignore")) for t in cached_msgs))
+        tok = compute_session_tokens("doubao", cid, Path(item.get("dir") or doubao_user_data), ts, total_bytes)
+        results.append({
+            "catalog_id": f"db_{cid[:16]}",
+            "format": "doubao",
+            "session_id": cid,
+            "title": title,
+            "started_at": started_at,
+            "records": len(cached_msgs),
+            "bytes": total_bytes,
+            **_token_fields(tok),
+            "file_path": item.get("dir") or str(doubao_user_data),
+            "all_files": [item.get("dir") or str(doubao_user_data)],
+            "account": "",
+            "model": "",
+            "mode": "chat_indexeddb",
+            "workspace": "",
+            "source_kind": "indexeddb",
+            "cached_msgs": cached_msgs,
+            "exists": True,
+            "mtime": ts,
+        })
+
+    return results
+
+
+def get_doubao_session_messages(session_match: dict[str, Any]) -> list[dict[str, Any]]:
+    """解析豆包会话的消息与工具事件列表。"""
+    events: list[dict[str, Any]] = []
+    source_kind = session_match.get("source_kind", "")
+    fp = Path(str(session_match.get("file_path") or ""))
+    started_at = str(session_match.get("started_at") or "")
+
+    if source_kind == "cloud":
+        cid = str(session_match.get("session_id") or "")
+        item = doubao_cloud.get(cid)
+        for m in item.get("messages") or []:
+            text = str(m.get("text") or "").strip()
+            if not text:
+                continue
+            ts = int(m.get("ts") or 0)
+            events.append({
+                "kind": m.get("kind") or "message",
+                "role": m.get("role") or "assistant",
+                "timestamp": (
+                    datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else started_at
+                ),
+                "text": text,
+                "tool_name": m.get("tool_name") or "",
+                "tool_call_id": "",
+                "payload": None,
+            })
+        if events:
+            return events
+        for idx, t in enumerate(session_match.get("cached_msgs") or []):
+            text = str(t or "").strip()
+            if not text:
+                continue
+            events.append({
+                "kind": "message",
+                "role": "user" if idx % 2 == 0 else "assistant",
+                "timestamp": started_at,
+                "text": text,
+                "tool_name": "",
+                "tool_call_id": "",
+                "payload": None,
+            })
+        return events
+
+    if source_kind == "indexeddb":
+        cid = str(session_match.get("session_id") or "")
+        local_app = LOCAL_APPDATA
+        item = doubao_idb.load(local_app / "Doubao" / "User Data").get(cid) or {}
+        for m in item.get("messages") or []:
+            text = str(m.get("text") or "").strip()
+            if not text:
+                continue
+            events.append({
+                "kind": m.get("kind") or "message",
+                "role": m.get("role") or "assistant",
+                "timestamp": started_at,
+                "text": text,
+                "tool_name": m.get("tool_name") or "",
+                "tool_call_id": "",
+                "payload": None,
+            })
+        if events:
+            return events
+        for idx, t in enumerate(session_match.get("cached_msgs") or []):
+            text = str(t or "").strip()
+            if not text:
+                continue
+            events.append({
+                "kind": "message",
+                "role": "user" if idx == 0 else "assistant",
+                "timestamp": started_at,
+                "text": text,
+                "tool_name": "",
+                "tool_call_id": "",
+                "payload": None,
+            })
+        if events:
+            return events
+        events.append({
+            "kind": "message",
+            "role": "assistant",
+            "timestamp": started_at,
+            "text": "该会话只有本地 IndexedDB 元数据（标题），没有任务态正文；豆包云端按该 ID 查询时 index_list 与 latest_messagelist 也都返回 0 条，因此不存在可读的正文。",
+            "tool_name": "",
+            "tool_call_id": "",
+            "payload": None,
+        })
+        return events
+
+    if source_kind == "agent_mode" and fp.exists():
+        with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                role = str(obj.get("role") or "")
+                content = obj.get("content")
+                text = content if isinstance(content, str) else (json.dumps(content, ensure_ascii=False) if content else "")
+                if role == "user" and text.strip():
+                    clean_user = re.sub(r"\[([^\]]+)\]\(<[^>]+>\)", r"[\1]", text.strip())
+                    events.append({
+                        "kind": "message",
+                        "role": "user",
+                        "timestamp": started_at,
+                        "text": clean_user,
+                        "tool_name": "",
+                        "tool_call_id": "",
+                        "payload": None,
+                    })
+                elif role == "assistant":
+                    if text.strip():
+                        events.append({
+                            "kind": "message",
+                            "role": "assistant",
+                            "timestamp": started_at,
+                            "text": text.strip(),
+                            "tool_name": "",
+                            "tool_call_id": "",
+                            "payload": None,
+                        })
+                    for tc in (obj.get("tool_calls") or []):
+                        if not isinstance(tc, dict):
+                            continue
+                        fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                        fn_name = str(fn.get("name") or tc.get("type") or "tool")
+                        args = fn.get("arguments")
+                        events.append({
+                            "kind": "tool_call",
+                            "role": "assistant",
+                            "timestamp": started_at,
+                            "text": json.dumps(args, ensure_ascii=False) if isinstance(args, (dict, list)) else str(args or ""),
+                            "tool_name": fn_name,
+                            "tool_call_id": str(tc.get("id") or ""),
+                            "payload": args if isinstance(args, dict) else None,
+                        })
+                elif role == "tool":
+                    events.append({
+                        "kind": "tool_result",
+                        "role": "tool",
+                        "timestamp": started_at,
+                        "text": text.strip(),
+                        "tool_name": "",
+                        "tool_call_id": str(obj.get("tool_call_id") or ""),
+                        "payload": None,
+                    })
+        return events
+
+    if source_kind == "coding_snapshot" and fp.exists():
+        data = json.loads(fp.read_text(encoding="utf-8", errors="ignore"))
+        exe = data.get("execution") or {}
+        files_list = data.get("files") or []
+        lines = [
+            "**智能体平台：** 豆包 (Coding Snapshot)",
+            f"**会话标识：** `{exe.get('conversationId', '')}`",
+            f"**执行标识：** `{exe.get('executionKey', '')}`",
+            f"**开始时间：** {exe.get('startedAtFormatted', started_at)}",
+            f"**结束时间：** {exe.get('endedAtFormatted', '')}",
+            f"**快照文件数：** {len(files_list)}",
+        ]
+        for fitem in files_list[:30]:
+            if isinstance(fitem, dict):
+                fpath = fitem.get("filePath") or fitem.get("path") or fitem.get("relativePath") or ""
+                if fpath:
+                    lines.append(f"- `{fpath}`")
+        events.append({
+            "kind": "message",
+            "role": "assistant",
+            "timestamp": started_at,
+            "text": "\n".join(lines),
+            "tool_name": "",
+            "tool_call_id": "",
+            "payload": None,
+        })
+        return events
+
+    if source_kind == "chat_workspace" and fp.exists() and fp.is_dir():
+        files_in_dir = [p for p in sorted(fp.rglob("*")) if p.is_file()]
+        summary = [f"**豆包工作区目录：** `{fp}`", f"**产物文件数：** {len(files_in_dir)}"]
+        for p in files_in_dir[:20]:
+            summary.append(f"- `{p.name}` ({p.stat().st_size} B)")
+        events.append({
+            "kind": "message",
+            "role": "assistant",
+            "timestamp": started_at,
+            "text": "\n".join(summary),
+            "tool_name": "",
+            "tool_call_id": "",
+            "payload": None,
+        })
+        for p in files_in_dir[:5]:
+            if p.suffix.lower() in {".md", ".txt", ".ps1", ".py", ".json"} and p.stat().st_size <= 64 * 1024:
+                txt = p.read_text(encoding="utf-8", errors="ignore")[:12000]
+                events.append({
+                    "kind": "message",
+                    "role": "assistant",
+                    "timestamp": started_at,
+                    "text": f"### {p.name}\n\n{txt}",
+                    "tool_name": "",
+                    "tool_call_id": "",
+                    "payload": None,
+                })
+        return events
+
+    if source_kind == "indexeddb":
+        cached_msgs = session_match.get("cached_msgs") or []
+        if cached_msgs:
+            for txt in cached_msgs:
+                events.append({
+                    "kind": "message",
+                    "role": "user",
+                    "timestamp": started_at,
+                    "text": txt,
+                    "tool_name": "",
+                    "tool_call_id": "",
+                    "payload": None,
+                })
+        else:
+            events.append({
+                "kind": "message",
+                "role": "assistant",
+                "timestamp": started_at,
+                "text": (
+                    f"**智能体平台：** 豆包 (IndexedDB 缓存索引)\n"
+                    f"**会话标题：** {session_match.get('title', '')}\n"
+                    f"**会话标识：** `{session_match.get('session_id', '')}`\n"
+                    f"**活跃时间：** {started_at}"
+                ),
+                "tool_name": "",
+                "tool_call_id": "",
+                "payload": None,
+            })
+        return events
 
     return events
 
@@ -2618,7 +4519,23 @@ class SessionFTSManager:
         return conn
 
     def _init_db(self):
-        with self._lock, self._get_conn() as conn:
+        # 正常路径：直接打开原库。
+        # 若原库的 -wal 被安全软件/残留句柄锁住，SQLite 会报
+        # “unable to open database file”。此时从主库文件做一份可写副本继续
+        # 启动，避免整个 Memory Tools 因为一个 WAL 句柄而不可用。
+        try:
+            self._init_db_at(self.db_path)
+        except sqlite3.OperationalError:
+            if not self.db_path.exists():
+                raise
+            alt = self.db_path.with_name(f"{self.db_path.stem}.recovered{self.db_path.suffix}")
+            if not alt.exists():
+                shutil.copy2(self.db_path, alt)
+            self.db_path = alt
+            self._init_db_at(alt)
+
+    def _init_db_at(self, db_path: Path):
+        with self._lock, sqlite3.connect(db_path, timeout=15) as conn:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute("""
@@ -2711,7 +4628,15 @@ class SessionFTSManager:
 
     def get_stats(self) -> dict:
         with self._get_conn() as conn:
-            turns = conn.execute("SELECT count(*) FROM conversation_fts").fetchone()[0]
+            # FTS5 的 count(*) 是 O(n) 全表扫描（本库 4.9 万行约 60 ms，占检索总耗时 85%）。
+            # docsize 表每个文档一行、与主表行数严格一致，计数为 O(1)（约 0.01 ms）。
+            try:
+                turns = int(conn.execute("SELECT count(*) FROM conversation_fts_docsize").fetchone()[0])
+            except sqlite3.OperationalError:
+                turns = 0
+            if turns <= 0:
+                # 兜底：极旧版本 FTS 或空库时退回主表计数
+                turns = int(conn.execute("SELECT count(*) FROM conversation_fts").fetchone()[0])
             files = conn.execute("SELECT count(*) FROM fts_file_meta").fetchone()[0]
             return {"indexed_files": files, "indexed_turns": turns}
 
@@ -2789,6 +4714,7 @@ FTS_DB_PATH = Path(default_catalog_path()).parent / "dialogue_fts.sqlite3"
 GLOBAL_FTS_MGR = SessionFTSManager(FTS_DB_PATH)
 
 _FTS_SYNC_IN_PROGRESS = False
+_FTS_SYNC_PENDING = False
 
 def _event_kind_value(ev: Any) -> str:
     """取事件的 kind 字符串（session_migrate 用 EventKind 枚举）。"""
@@ -2827,8 +4753,13 @@ def extract_dialogue_turns_for_fts(path: Path, fmt: str) -> list[dict]:
         })
 
     try:
-        if fmt in {"antigravity", "claude"}:
-            agent_format = AgentFormat.ANTIGRAVITY if fmt == "antigravity" else AgentFormat.CLAUDE
+        if fmt in {"antigravity", "claude", "codex"}:
+            if fmt == "antigravity":
+                agent_format = AgentFormat.ANTIGRAVITY
+            elif fmt == "claude":
+                agent_format = AgentFormat.CLAUDE
+            else:
+                agent_format = AgentFormat.CODEX
             sess = load_session(path, agent_format)
             user_turn_no = 0
             for ev in sess.events:
@@ -3068,8 +4999,22 @@ def collect_all_sessions(fmt_filter: str = "all", search: str = "") -> list[dict
                 if search not in haystack:
                     continue
             t_path = Path(t["file_path"])
-            t["mtime"] = t_path.stat().st_mtime if t_path.exists() else 0
+            # 不要把每个 Trae 会话都覆盖成解密库文件的 mtime：同一库文件下
+            # 所有会话会得到相同值，“最近活跃”排序就退化成文件枚举顺序。
+            # 只有没有会话级时间时才回退到文件 mtime。
+            if float(t.get("mtime") or 0) <= 0:
+                t["mtime"] = t_path.stat().st_mtime if t_path.exists() else 0
             results.append(t)
+
+    # Append Doubao sessions
+    if fmt_filter in {"all", "doubao", ""}:
+        db_list = get_doubao_sessions()
+        for d in db_list:
+            if search:
+                haystack = f"{d['title']} {d['session_id']} doubao {d['file_path']}".lower()
+                if search not in haystack:
+                    continue
+            results.append(d)
 
     flush_token_cache()
     _mark_antigravity_lineage(results)
@@ -3077,8 +5022,9 @@ def collect_all_sessions(fmt_filter: str = "all", search: str = "") -> list[dict
     return results
 
 def _run_fts_sync_worker():
-    global _FTS_SYNC_IN_PROGRESS
+    global _FTS_SYNC_IN_PROGRESS, _FTS_SYNC_PENDING
     if _FTS_SYNC_IN_PROGRESS:
+        _FTS_SYNC_PENDING = True
         return
     _FTS_SYNC_IN_PROGRESS = True
     try:
@@ -3109,6 +5055,15 @@ def _run_fts_sync_worker():
                 p_str = s.get("file_path")
                 if not p_str:
                     continue
+                # 豆包 IndexedDB 由 2c 用合成键逐个会话索引（一个目录承载多个会话）
+                if s.get("source_kind") == "indexeddb":
+                    continue
+                # 豆包云端同步仓由 2d 用合成键索引，避免主循环把它当普通文件清空
+                if s.get("source_kind") == "cloud":
+                    continue
+                # 解密库承载多个会话，由下方 2b 逐个建立索引，这里跳过
+                if str(p_str).endswith("trae_database_plain.db"):
+                    continue
                 p = Path(p_str)
                 if not p.exists() or p.stat().st_size == 0:
                     continue
@@ -3137,8 +5092,228 @@ def _run_fts_sync_worker():
                 time.sleep(0.005)
             except Exception:
                 pass
+
+        # 2b. Trae 解密库：同一个物理库承载多个会话，用合成索引键逐个建索引
+        for s in all_sessions:
+            if not s.get("has_db"):
+                continue
+            sid = s.get("session_id")
+            if not sid:
+                continue
+            try:
+                st = TRAE_PLAIN_DB.stat()
+            except Exception:
+                continue
+            key = f"trae_db://{sid}"
+            try:
+                if GLOBAL_FTS_MGR.is_file_up_to_date(key, st.st_mtime, st.st_size):
+                    continue
+            except Exception:
+                pass
+            turns = []
+            user_no = 0
+            for msg in _trae_db_messages(sid):
+                # 只索引人话正文；tool_call 的入参 JSON 与工具输出留在详情里看，
+                # 不进 FTS，避免搜索结果被命令/参数片段淹没。
+                if msg.get("kind") != "message":
+                    continue
+                role = msg.get("role")
+                if role not in ("user", "assistant"):
+                    continue
+                if role == "user":
+                    user_no += 1
+                turns.append({
+                    "role": role,
+                    "turn_index": max(user_no, 1),
+                    "text": msg.get("text") or "",
+                    "timestamp": msg.get("timestamp") or "",
+                })
+            if not turns:
+                continue
+            try:
+                GLOBAL_FTS_MGR.index_session_turns(
+                    file_path=key,
+                    mtime=st.st_mtime,
+                    size=st.st_size,
+                    catalog_id=s.get("catalog_id") or f"trae_{sid[:16]}",
+                    session_id=sid,
+                    session_title=s.get("title") or "",
+                    session_format="trae",
+                    turns=turns,
+                )
+                synced_count += 1
+                time.sleep(0.005)
+            except Exception:
+                pass
+
+        # 2c. 豆包 IndexedDB：一个 profile 目录承载多个会话，用合成键逐个建索引
+        try:
+            doubao_user_data = LOCAL_APPDATA / "Doubao" / "User Data"
+            idb_dirs = doubao_idb.leveldb_dirs(doubao_user_data)
+            if idb_dirs:
+                sig_mtime = 0.0
+                sig_size = 0
+                for idb_dir in idb_dirs:
+                    for f in idb_dir.glob("*"):
+                        try:
+                            st = f.stat()
+                        except OSError:
+                            continue
+                        sig_mtime = max(sig_mtime, st.st_mtime_ns / 1e9)
+                        sig_size += st.st_size
+                idb = doubao_idb.load(doubao_user_data)
+                cloud_cids = set(doubao_cloud.load())
+                current_keys = set()
+                for cid, item in idb.items():
+                    if cid in cloud_cids:
+                        continue
+                    msgs = [
+                        m for m in (item.get("messages") or [])
+                        if m.get("kind", "message") == "message"
+                        and str(m.get("text") or "").strip()
+                    ]
+                    if not msgs:
+                        continue
+                    key = f"doubao_idb://{cid}"
+                    current_keys.add(key)
+                    try:
+                        if GLOBAL_FTS_MGR.is_file_up_to_date(key, sig_mtime, sig_size):
+                            continue
+                    except Exception:
+                        pass
+                    turns = []
+                    user_no = 0
+                    for m in msgs:
+                        role = m.get("role")
+                        if role not in ("user", "assistant"):
+                            continue
+                        if role == "user":
+                            user_no += 1
+                        turns.append({
+                            "role": role,
+                            "turn_index": max(user_no, 1),
+                            "text": m.get("text") or "",
+                            "timestamp": "",
+                        })
+                    if not turns:
+                        continue
+                    try:
+                        GLOBAL_FTS_MGR.index_session_turns(
+                            file_path=key,
+                            mtime=sig_mtime,
+                            size=sig_size,
+                            catalog_id=f"db_{cid[:16]}",
+                            session_id=cid,
+                            session_title=item.get("title") or f"豆包对话 ({cid[-8:]})",
+                            session_format="doubao",
+                            turns=turns,
+                        )
+                        synced_count += 1
+                        time.sleep(0.005)
+                    except Exception:
+                        pass
+                # 清理已消失会话的旧索引
+                try:
+                    with GLOBAL_FTS_MGR._get_conn() as conn:
+                        rows = conn.execute(
+                            "SELECT file_path, catalog_id FROM fts_file_meta "
+                            "WHERE file_path LIKE 'doubao_idb://%'"
+                        ).fetchall()
+                        for old_key, old_cid in rows:
+                            if old_key in current_keys:
+                                continue
+                            conn.execute(
+                                "DELETE FROM conversation_fts WHERE catalog_id = ?", (old_cid,)
+                            )
+                            conn.execute(
+                                "DELETE FROM fts_file_meta WHERE file_path = ?", (old_key,)
+                            )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 2d. 豆包云端同步仓：完整正文，优先于 IndexedDB
+        try:
+            cloud = doubao_cloud.load()
+            current_cloud_keys = set()
+            for cid, item in cloud.items():
+                msgs = [
+                    m for m in (item.get("messages") or [])
+                    if m.get("kind", "message") == "message"
+                    and str(m.get("text") or "").strip()
+                ]
+                if not msgs:
+                    continue
+                key = f"doubao_cloud://{cid}"
+                current_cloud_keys.add(key)
+                fpath = Path(str(item.get("file") or item.get("dir") or ""))
+                try:
+                    st = fpath.stat()
+                except OSError:
+                    continue
+                try:
+                    if GLOBAL_FTS_MGR.is_file_up_to_date(key, st.st_mtime, st.st_size):
+                        continue
+                except Exception:
+                    pass
+                turns = []
+                user_no = 0
+                for m in msgs:
+                    role = m.get("role")
+                    if role not in ("user", "assistant"):
+                        continue
+                    if role == "user":
+                        user_no += 1
+                    turns.append({
+                        "role": role,
+                        "turn_index": max(user_no, 1),
+                        "text": m.get("text") or "",
+                        "timestamp": "",
+                    })
+                if not turns:
+                    continue
+                try:
+                    GLOBAL_FTS_MGR.index_session_turns(
+                        file_path=key,
+                        mtime=st.st_mtime,
+                        size=st.st_size,
+                        catalog_id=f"db_{cid[:16]}",
+                        session_id=cid,
+                        session_title=item.get("title") or f"豆包对话 ({cid[-8:]})",
+                        session_format="doubao",
+                        turns=turns,
+                    )
+                    synced_count += 1
+                    time.sleep(0.003)
+                except Exception:
+                    pass
+            try:
+                with GLOBAL_FTS_MGR._get_conn() as conn:
+                    rows = conn.execute(
+                        "SELECT file_path, catalog_id FROM fts_file_meta "
+                        "WHERE file_path LIKE 'doubao_cloud://%'"
+                    ).fetchall()
+                    for old_key, old_cid in rows:
+                        if old_key in current_cloud_keys:
+                            continue
+                        conn.execute(
+                            "DELETE FROM conversation_fts WHERE catalog_id = ?", (old_cid,)
+                        )
+                        conn.execute(
+                            "DELETE FROM fts_file_meta WHERE file_path = ?", (old_key,)
+                        )
+            except Exception:
+                pass
+        except Exception:
+            pass
     finally:
         _FTS_SYNC_IN_PROGRESS = False
+        if _FTS_SYNC_PENDING:
+            _FTS_SYNC_PENDING = False
+            threading.Thread(
+                target=_run_fts_sync_worker, daemon=True, name="FTS_SyncWorker"
+            ).start()
 
 def trigger_fts_sync():
     t = threading.Thread(target=_run_fts_sync_worker, daemon=True, name="FTS_SyncWorker")
@@ -3297,6 +5472,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.handle_session_event(query)
             elif path == "/api/search/content":
                 self.handle_search_content(query)
+            elif path == "/api/doubao/sync/status":
+                self.send_json({
+                    "running": _DOUBAO_SYNC_STATE["running"],
+                    "started_at": _DOUBAO_SYNC_STATE["started_at"],
+                    "last_result": _DOUBAO_SYNC_STATE["last_result"],
+                    "last_sync": doubao_cloud.last_sync_ts(),
+                    "conversations": len(doubao_cloud.load()),
+                })
             else:
                 self.send_json({"error": "Not Found"}, status=404)
         elif self.serve_static(path):
@@ -3330,6 +5513,22 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.handle_sessions_batch_migrate(payload)
         elif path == "/api/open_folder":
             self.handle_open_folder(payload)
+        elif path == "/api/doubao/sync":
+            try:
+                limit = int(payload.get("limit") or 0)
+            except Exception:
+                limit = 0
+            started = start_doubao_sync(
+                full=bool(payload.get("full")),
+                only=str(payload.get("only") or ""),
+                limit=limit,
+            )
+            self.send_json({
+                "ok": True,
+                "started": started,
+                "running": _DOUBAO_SYNC_STATE["running"],
+                "last_sync": doubao_cloud.last_sync_ts(),
+            })
         else:
             self.send_json({"error": "Not Found"}, status=404)
 
@@ -3355,32 +5554,24 @@ class RequestHandler(BaseHTTPRequestHandler):
         ).fetchall())
         db.close()
 
-        # Add WorkBuddy and Trae counts
-        wb_sessions = get_workbuddy_sessions()
-        trae_sessions = get_trae_sessions()
-        format_counts["workbuddy"] = len(wb_sessions)
-        format_counts["trae"] = len(trae_sessions)
+        # Add WorkBuddy, Trae and Doubao counts
+        # 不再逐个格式重新扫盘：直接复用列表快照（single-flight，冷启动也只构建一次），
+        # 这样 /api/status 的计数与 /api/sessions 的 total 永远一致，且热态 ~10 ms。
+        snapshot, _cache_status = _get_snapshot_cache().get(allow_stale=True)
+        snap_items = snapshot.items_full
+        format_counts = {}
+        for it in snap_items:
+            fmt = str(it.get("format") or "")
+            if fmt:
+                format_counts[fmt] = format_counts.get(fmt, 0) + 1
+        total_sessions = len(snap_items)
 
-        # Antigravity 以磁盘上真实存在的 .db 为准：索引库可能滞后或漏扫，
-        # 否则顶部总数会和列表实际条数对不上
-        ag_seen: set[str] = set()
-        for ag_dir in ANTIGRAVITY_CONV_DIRS:
-            if not ag_dir.exists():
-                continue
-            for ag_db in ag_dir.glob("*.db"):
-                try:
-                    if ag_db.name.endswith(("-wal", "-shm")) or ag_db.stat().st_size == 0:
-                        continue
-                except OSError:
-                    continue
-                ag_seen.add(ag_db.stem)
-        if ag_seen:
-            format_counts["antigravity"] = len(ag_seen)
-
-        total_sessions = sum(int(v or 0) for v in format_counts.values())
+        # 保留 WorkBuddy / Trae / 豆包 的键（即使当前没有条目），前端按 0 显示
+        for fmt_key in ("workbuddy", "trae", "doubao"):
+            format_counts.setdefault(fmt_key, 0)
 
         # Append Trae user & memory data directories into roots_data
-        trae_user_dir = Path(r"C:\Users\HP\AppData\Roaming\Trae CN\User")
+        trae_user_dir = _roaming_path("Trae CN", "User")
         if trae_user_dir.exists() and not any(r.get("path") == str(trae_user_dir) for r in roots_data):
             roots_data.append({
                 "id": 9901,
@@ -3392,7 +5583,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "last_scan_status": "ok",
                 "last_error": None,
             })
-        trae_mem_dir = Path(r"C:\Users\HP\.trae-cn\memory")
+        trae_mem_dir = _home_path(".trae-cn", "memory")
         if trae_mem_dir.exists() and not any(r.get("path") == str(trae_mem_dir) for r in roots_data):
             roots_data.append({
                 "id": 9902,
@@ -3692,6 +5883,22 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "extra": {"match": match},
             }
 
+        # 2.5 Doubao
+        if cid.startswith("db_"):
+            sid = cid[3:]
+            match = next(
+                (d for d in get_doubao_sessions() if d["session_id"].startswith(sid)), None
+            )
+            if not match:
+                raise detail_service.DetailError("Doubao session not found", 404)
+            return {
+                "catalog_id": cid,
+                "branch": "doubao",
+                "format": "doubao",
+                "path": Path(match["file_path"]),
+                "extra": {"match": match},
+            }
+
         # 3. 自定义 Antigravity（ag_<前缀>，直接扫会话目录）
         if cid.startswith("ag_"):
             sid_prefix = cid[3:]
@@ -3758,6 +5965,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             })
         return events_data
 
+
     def _detail_load(self, probe: dict[str, Any]) -> dict[str, Any]:
         """真正解析一个会话，返回**全量** payload（未裁剪、未分片）。"""
         branch = probe.get("branch")
@@ -3796,6 +6004,39 @@ class RequestHandler(BaseHTTPRequestHandler):
             return {
                 "session_id": match["session_id"],
                 "format": "trae",
+                "title": match["title"],
+                "started_at": match["started_at"],
+                "events_count": len(events),
+                "events": events,
+                "notice": notice,
+            }
+
+        if branch == "doubao":
+            match = extra["match"]
+            try:
+                events = sanitize_session_events(get_doubao_session_messages(match), "doubao")
+            except Exception as e:
+                raise detail_service.DetailError(f"Failed to read Doubao session: {e}", 500)
+            has_user = any(str(ev.get("role") or "") == "user" for ev in events)
+            has_assistant = any(str(ev.get("role") or "") == "assistant" for ev in events)
+            notice = ""
+            if not has_user:
+                if match.get("source_kind") == "indexeddb":
+                    notice = (
+                        "该豆包会话在本地只有会话元数据、没有消息正文；"
+                        "云端接口也没有对应记录（basic_info 400 / latest_messagelist retry_list），"
+                        "因此没有可解析的正文。"
+                    )
+                else:
+                    notice = (
+                        "该豆包会话没有可解析的用户消息，"
+                        "仅展示本地可读的工作区产物/快照内容。"
+                    )
+            elif not has_assistant:
+                notice = "该豆包会话本地仅记录到用户提问，未落盘模型回复或工具调用。"
+            return {
+                "session_id": match["session_id"],
+                "format": "doubao",
                 "title": match["title"],
                 "started_at": match["started_at"],
                 "events_count": len(events),
@@ -3933,6 +6174,11 @@ class RequestHandler(BaseHTTPRequestHandler):
         if not cid:
             self.send_json({"error": "catalog_id required"}, status=400)
             return
+
+        # 豆包云端详情：只要该会话的 manifest 超过 120 秒，就触发一次
+        # --only 后台增量；本次先返回旧缓存，客户端收到 refresh_pending 后重取。
+        refresh_pending = _maybe_refresh_doubao_detail(cid)
+        full_cloud_cid = _doubao_cloud_cid_for_catalog(cid)
         try:
             probe = self._detail_probe(cid)
         except detail_service.DetailError as exc:
@@ -3941,6 +6187,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             self.send_json({"error": f"Failed to resolve session: {exc}"}, status=500)
             return
+        probe["response_extra"] = {
+            "refresh_pending": bool(refresh_pending),
+            "cloud_link": f"doubao_cloud://{full_cloud_cid}" if full_cloud_cid else "",
+        }
         detail_service.serve(self, query, probe, lambda: self._detail_load(probe))
 
     def handle_get_session_inspect(self, query: dict[str, list[str]]):
@@ -3984,6 +6234,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         try:
             with Catalog(default_catalog_path()) as cat:
                 res = cat.refresh()
+            # 目录刷新后异步补齐新会话的 FTS 索引（含 Codex）。
+            trigger_fts_sync()
             self.send_json({
                 "success": True,
                 "scanned": res.scanned,
@@ -4044,7 +6296,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 import time, uuid
                 new_sid = str(uuid.uuid4())
                 now_ms = int(time.time() * 1000)
-                wb_root = Path(r"C:\Users\HP\.workbuddy")
+                wb_root = _home_path(".workbuddy")
                 
                 if mode == "export":
                     out_dir = Path(custom_out_dir) if custom_out_dir else EXPORT_DIR
@@ -4084,6 +6336,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                         trae_events = get_trae_session_messages(match)
                         for ev in trae_events:
                             messages.append({"role": ev.get("role", "user"), "text": ev.get("text", "")})
+                elif cid.startswith("db_"):
+                    sid = cid[3:]
+                    db_list = get_doubao_sessions()
+                    match = next((d for d in db_list if d["session_id"].startswith(sid)), None)
+                    if match:
+                        title = match.get("title", title)
+                        for ev in get_doubao_session_messages(match):
+                            if ev.get("text"):
+                                messages.append({"role": "user" if ev.get("role") == "user" else "assistant", "text": ev.get("text", "")})
                 else:
                     with Catalog(default_catalog_path()) as cat:
                         source_ref = cat.session_source_for_transfer(cid)
@@ -4188,6 +6449,30 @@ class RequestHandler(BaseHTTPRequestHandler):
             temp_cleanup_path = make_temp_claude_jsonl(msgs, match["session_id"])
             src_path = temp_cleanup_path
             src_format = AgentFormat.CLAUDE
+        elif cid.startswith("db_"):
+            sid = cid[3:]
+            db_list = get_doubao_sessions()
+            match = next((d for d in db_list if d["session_id"].startswith(sid)), None)
+            if not match:
+                self.send_json({"error": "Doubao session not found"}, status=404)
+                return
+            msgs = []
+            try:
+                for ev in get_doubao_session_messages(match):
+                    txt = (ev.get("text") or "").strip()
+                    if not txt:
+                        continue
+                    msgs.append({
+                        "role": "user" if ev.get("role") == "user" else "assistant",
+                        "text": txt,
+                        "timestamp": ev.get("timestamp") or "2026-10-13T12:00:00Z",
+                    })
+            except Exception as e:
+                self.send_json({"error": f"Failed to read Doubao session: {e}"}, status=500)
+                return
+            temp_cleanup_path = make_temp_claude_jsonl(msgs, match["session_id"])
+            src_path = temp_cleanup_path
+            src_format = AgentFormat.CLAUDE
         elif cid.startswith("ag_"):
             sid = cid[3:]
             ag_file = None
@@ -4252,9 +6537,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                 target_home = default_target_home(target_fmt)
                 if target_fmt == AgentFormat.ANTIGRAVITY:
                     # Direct installation into modern Antigravity conversations
-                    ide_dir = Path(r"C:\Users\HP\.gemini\antigravity\conversations")
+                    ide_dir = _home_path(".gemini", "antigravity", "conversations")
                     if not ide_dir.parent.exists():
-                        ide_dir = Path(r"C:\Users\HP\.gemini\antigravity-ide\conversations")
+                        ide_dir = _home_path(".gemini", "antigravity-ide", "conversations")
                     ide_dir.mkdir(parents=True, exist_ok=True)
                     out_path = ide_dir / f"{artifact.session_id}.db"
                     with open(out_path, "wb") as f:
@@ -4373,10 +6658,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         # 3. 如果是 Antigravity：递归清理关联的 brain 记忆目录与日志
         if sid and (fmt == "antigravity" or "antigravity" in str(main_path or "").lower()):
             brain_dirs = [
-                Path(r"C:\Users\HP\.gemini\antigravity\brain") / sid,
-                Path(r"C:\Users\HP\.gemini\antigravity-ide\brain") / sid,
-                Path(r"C:\Users\HP\.gemini\antigravity-ide\brain_readable") / sid,
-                Path(r"C:\Users\HP\.gemini\antigravity-cli\brain") / sid,
+                _home_path(".gemini", "antigravity", "brain") / sid,
+                _home_path(".gemini", "antigravity-ide", "brain") / sid,
+                _home_path(".gemini", "antigravity-ide", "brain_readable") / sid,
+                _home_path(".gemini", "antigravity-cli", "brain") / sid,
             ]
             for b_dir in brain_dirs:
                 if b_dir.exists() and b_dir.is_dir():
@@ -4388,8 +6673,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
             for s_db_p in [
-                Path(r"C:\Users\HP\.gemini\antigravity\conversation_summaries.db"),
-                Path(r"C:\Users\HP\.gemini\antigravity-ide\conversation_summaries.db"),
+                _home_path(".gemini", "antigravity", "conversation_summaries.db"),
+                _home_path(".gemini", "antigravity-ide", "conversation_summaries.db"),
             ]:
                 if s_db_p.exists():
                     try:
@@ -4402,8 +6687,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 child_sids = set()
                 for s_db_p in [
-                    Path(r"C:\Users\HP\.gemini\antigravity\conversation_summaries.db"),
-                    Path(r"C:\Users\HP\.gemini\antigravity-ide\conversation_summaries.db"),
+                    _home_path(".gemini", "antigravity", "conversation_summaries.db"),
+                    _home_path(".gemini", "antigravity-ide", "conversation_summaries.db"),
                 ]:
                     if s_db_p.exists():
                         with sqlite3.connect(s_db_p, timeout=5) as s_conn:
@@ -4429,10 +6714,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                                     extra_p.unlink(missing_ok=True)
                     # 清除子代理 brain 目录
                     for c_b_dir in [
-                        Path(r"C:\Users\HP\.gemini\antigravity\brain") / c_sid,
-                        Path(r"C:\Users\HP\.gemini\antigravity-ide\brain") / c_sid,
-                        Path(r"C:\Users\HP\.gemini\antigravity-ide\brain_readable") / c_sid,
-                        Path(r"C:\Users\HP\.gemini\antigravity-cli\brain") / c_sid,
+                        _home_path(".gemini", "antigravity", "brain") / c_sid,
+                        _home_path(".gemini", "antigravity-ide", "brain") / c_sid,
+                        _home_path(".gemini", "antigravity-ide", "brain_readable") / c_sid,
+                        _home_path(".gemini", "antigravity-cli", "brain") / c_sid,
                     ]:
                         if c_b_dir.exists() and c_b_dir.is_dir():
                             c_sz = sum(f.stat().st_size for f in c_b_dir.glob('**/*') if f.is_file())
@@ -4441,8 +6726,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                             cleaned_paths.append(str(c_b_dir))
                     # 从摘要库清除子代理记录
                     for s_db_p in [
-                        Path(r"C:\Users\HP\.gemini\antigravity\conversation_summaries.db"),
-                        Path(r"C:\Users\HP\.gemini\antigravity-ide\conversation_summaries.db"),
+                        _home_path(".gemini", "antigravity", "conversation_summaries.db"),
+                        _home_path(".gemini", "antigravity-ide", "conversation_summaries.db"),
                     ]:
                         if s_db_p.exists():
                             with sqlite3.connect(s_db_p, timeout=5) as s_conn:
@@ -4453,7 +6738,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         # 4. 如果是 WorkBuddy：从 workbuddy.db 中删除该会话记录
         if fmt == "workbuddy" or (main_path and "workbuddy" in str(main_path).lower()):
             try:
-                wb_db = Path(r"C:\Users\HP\.workbuddy\workbuddy.db")
+                wb_db = _home_path(".workbuddy", "workbuddy.db")
                 if wb_db.exists():
                     with sqlite3.connect(wb_db, timeout=5) as conn:
                         conn.execute("DELETE FROM sessions WHERE id = ? OR id LIKE ?", (sid, f"%{sid}%"))
@@ -4464,7 +6749,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         # 5. 如果是 Trae：彻底清理关联的物理 session_memory 文件、attachments 截图、thumbnails 缩略图、work 目录及 state.vscdb 记录
         if fmt in ["trae", "trae_solo"] or (main_path and "trae" in str(main_path).lower()) or (cid and cid.startswith("trae_")):
             # A. 物理 session_memory 文件
-            trae_mem_projects = Path(r"C:\Users\HP\.trae-cn\memory\projects")
+            trae_mem_projects = _home_path(".trae-cn", "memory", "projects")
             if trae_mem_projects.exists():
                 for f in trae_mem_projects.rglob(f"session_memory_*{sid}*.jsonl"):
                     try:
@@ -4474,7 +6759,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
             # B. 截图附件 attachments
-            att_dir = Path(r"C:\Users\HP\.trae-cn\attachments") / sid
+            att_dir = _home_path(".trae-cn", "attachments") / sid
             if att_dir.exists() and att_dir.is_dir():
                 try:
                     dir_sz = sum(f.stat().st_size for f in att_dir.glob("**/*") if f.is_file())
@@ -4484,7 +6769,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             # C. 缩略图 thumbnails
-            thumb_file = Path(r"C:\Users\HP\.trae-cn\.thumbnails") / f"{sid}.png"
+            thumb_file = _home_path(".trae-cn", ".thumbnails") / f"{sid}.png"
             if thumb_file.exists():
                 try:
                     total_freed_bytes += thumb_file.stat().st_size
@@ -4493,7 +6778,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             # D. Work 目录
-            work_dir = Path(r"C:\Users\HP\.trae-cn\work") / sid
+            work_dir = _home_path(".trae-cn", "work") / sid
             if work_dir.exists() and work_dir.is_dir():
                 try:
                     dir_sz = sum(f.stat().st_size for f in work_dir.glob("**/*") if f.is_file())
@@ -4504,8 +6789,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                     pass
             # E. 所有 state.vscdb 中清理键并紧缩释放物理空间
             for user_base in [
-                Path(r"C:\Users\HP\AppData\Roaming\Trae CN\User"),
-                Path(r"C:\Users\HP\AppData\Roaming\TRAE SOLO CN\User"),
+                _roaming_path("Trae CN", "User"),
+                _roaming_path("TRAE SOLO CN", "User"),
             ]:
                 if not user_base.exists():
                     continue
@@ -4673,16 +6958,19 @@ class RequestHandler(BaseHTTPRequestHandler):
             p_resolved = str(p.resolve())
             if os.name == "nt":
                 import subprocess
+                # explorer 是 GUI 程序，不产生控制台；CREATE_NO_WINDOW 仅对
+                # cmd 回退路径生效，避免后台进程弹出终端窗口。
+                no_window = {"creationflags": subprocess.CREATE_NO_WINDOW}
                 if p.is_file():
                     # Windows 原生命令行，带 /select,"..." 确保高亮选中该文件
                     cmd = f'explorer.exe /select,"{p_resolved}"'
                     try:
-                        subprocess.Popen(cmd)
+                        subprocess.Popen(cmd, **no_window)
                     except Exception:
-                        os.system(f'explorer /select,"{p_resolved}"')
+                        subprocess.Popen(["cmd", "/c", "start", "", cmd], **no_window)
                 else:
                     cmd = f'explorer.exe "{p_resolved}"'
-                    subprocess.Popen(cmd)
+                    subprocess.Popen(cmd, **no_window)
             elif sys.platform == "darwin":
                 import subprocess
                 subprocess.Popen(["open", "-R" if p.is_file() else "", p_resolved])
@@ -4700,29 +6988,18 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._send_compressed(body, "text/html; charset=utf-8", status=200)
 
 
-def release_port(port: int):
-    import subprocess, time
-    try:
-        res = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, errors="ignore")
-        killed = False
-        for line in res.stdout.splitlines():
-            if f":{port}" in line and "LISTENING" in line:
-                parts = line.strip().split()
-                if len(parts) >= 5:
-                    pid = parts[-1]
-                    if pid != str(os.getpid()) and pid != "0":
-                        subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
-                        killed = True
-        if killed:
-            time.sleep(0.5)
-    except Exception:
-        pass
-
 def main():
     global PORT
+    multiprocessing.freeze_support()
     # 命令行覆盖：--port 18923 / --no-browser（不影响任何接口行为，仅便于多实例自测）
     argv = list(sys.argv[1:])
+    if argv[:1] == ["--helper"]:
+        if len(argv) < 2:
+            print("usage: web_app.py --helper <doubao-sync|trae-decrypt> ...", file=sys.stderr)
+            return 2
+        return run_helper(argv[1], argv[2:])
     open_browser_enabled = True
+
     if "--no-browser" in argv:
         open_browser_enabled = False
         argv.remove("--no-browser")
@@ -4743,13 +7020,43 @@ def main():
     except Exception:
         pass
 
-    # Ensure port is clean before binding
-    release_port(PORT)
+    url = f"http://127.0.0.1:{PORT}"
+    guard = instance_service.acquire_instance_lock(
+        f"AgentsMemoryTools-{PORT}", DATA_DIR
+    )
+    if guard is None:
+        if open_browser_enabled:
+            try:
+                import webbrowser
+                webbrowser.open(url)
+            except Exception:
+                pass
+        print(f"Agents Memory Tools is already running: {url}")
+        return 0
 
     trigger_fts_sync()
-    server_address = ("0.0.0.0", PORT)
-    httpd = ReusableThreadingServer(server_address, RequestHandler)
-    url = f"http://127.0.0.1:{PORT}"
+    try:
+        # 只监听回环地址，避免局域网其他设备访问本地会话数据。
+        server_address = ("127.0.0.1", PORT)
+        httpd = ReusableThreadingServer(server_address, RequestHandler)
+    except OSError as exc:
+        guard.close()
+        print(
+            f"Cannot bind {PORT}: {exc}. "
+            "Another application may be using this port; no existing process was killed.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # 启动即预热列表快照（构建 ~1.4 s，single-flight）。
+    # 用户打开页面时通常已经命中缓存，首屏从 1.5 s 降到 ~30 ms。
+    def _warm_snapshot():
+        try:
+            _get_snapshot_cache().get(allow_stale=True)
+        except Exception:
+            pass
+    threading.Thread(target=_warm_snapshot, daemon=True, name="SnapshotWarmup").start()
+
     print("=" * 65)
     print("  Agents Memory Tools 跨智能体会话记忆管理与一键迁移平台")
     print(f"  本地访问地址: {url}")
@@ -4764,7 +7071,6 @@ def main():
             webbrowser.open(url)
         except Exception:
             pass
-    import threading
     if open_browser_enabled:
         threading.Thread(target=open_browser, daemon=True).start()
     while True:
@@ -4787,4 +7093,4 @@ def main():
             time.sleep(0.5)
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

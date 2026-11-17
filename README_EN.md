@@ -1,7 +1,7 @@
 # Memory Tools
 
 <p align="center">
-  <strong>Cross-IDE AI Coding Session Search, Memory Archiving, Token Auditing & Format Migration</strong>
+  <strong>Cross-IDE AI Session Search, Memory Archiving, Token Auditing & Format Migration</strong>
 </p>
 
 <p align="center">
@@ -17,147 +17,193 @@
 
 ## Background & Design Rationale
 
-Modern software development frequently involves multiple AI coding assistants (such as Antigravity, Cursor, Claude Code, Trae, GitHub Copilot, and WorkBuddy). This heterogeneous workflow creates several recurring engineering headaches:
+Most developers do not use a single AI coding assistant. Antigravity, Claude Code, Codex, GitHub Copilot, Trae, WorkBuddy, Doubao and others each keep their own session store: SQLite (`state.vscdb`), line-delimited JSONL, nested folders, or a private schema.
 
-1. **Session Fragmentation & Format Heterogeneity**: Assistants store sessions in isolated directories using disparate formats—ranging from SQLite databases (`state.vscdb`) and line-delimited JSON (`jsonl`) to layered directory structures and proprietary state stores. Reusing prompts, reasoning chains, and historical fixes across tools is difficult.
-2. **Lack of Global Search in Official IDEs**: Several mainstream environments (notably Antigravity) provide no built-in global search across past conversation histories. When session counts reach hundreds, locating past technical decisions or diagnostic solutions requires tedious manual browsing.
-3. **Edge Cases in Automated Format Conversion**: While migration between tools is desirable, vendor protocols evolve rapidly. Pure automated AST translation inevitably hits format mismatches on edge cases.
+That creates three practical problems:
 
-To address these issues, **Memory Tools** adopts a **dual-track design**:
-- **Conversion Track**: Native AST-level schema translation and silent target workspace mounting for supported environments;
-- **Absolute Path Track**: Direct physical file indexing and one-click revelation in the system file manager. When interacting with an unsupported or experimental agent, developers can bypass conversion altogether, grab the raw session transcript directly from disk, and feed it straight into the new agent without data loss.
+1. **Sessions are scattered.** Moving a debugging trace or a reusable prompt to another tool usually means copy-paste.
+2. **Some IDEs have no global history search.** Once a few hundred sessions accumulate, finding a decision or an old fix turns into manual scrolling.
+3. **Format conversion has limits.** Vendor protocols change faster than converters can follow. The original session file, however, is usually still on disk.
+
+Memory Tools uses a **dual-track design**:
+
+- **Conversion track**: schema-aware conversion, target-directory writing, and standalone export for supported platforms.
+- **Absolute-path track**: every indexed session keeps its original file path and a “reveal in file manager” action. When a platform is not supported, the raw file can still be handed to another agent without conversion.
+
+It is not a replacement for the IDE and does not take over your accounts. It turns existing local sessions into a searchable, auditable, portable index.
 
 ---
 
 ## Core Features
 
-### 1. Dashboard Overview
-Scans the local environment, summarizing recognized coding assistant platforms, session totals, directories, and storage footprints.
+> The screenshots below are from the current workspace. Platform and session counts depend on what is installed on each machine.
 
-![Dashboard Overview](docs/images/01_dashboard_overview_annotated.png)
+### 1. Dashboard Overview
+
+On startup, the workbench scans configured roots and summarizes platform distribution, session count, storage size, and token totals. The current workspace indexes **6 platforms, 835 sessions, 2.75 GB of session files, and 3.90B tokens**.
+
+![Dashboard Overview](docs/images/01_dashboard_overview.png)
 
 ---
 
 ### 2. Platform Filtering
-Filter conversations by assistant tags (Antigravity, Claude Code, Trae, Cursor, Copilot, etc.). Each card displays message count, disk size, and unique identifiers, with multi-condition classification and search.
 
-![Platform Filter](docs/images/02_platform_matrix_filter_annotated.png)
+The platform strip provides entries for Antigravity, Claude Code, Codex, GitHub Copilot, WorkBuddy, Trae, and Doubao. Each session card shows steps, file size, estimated tokens, a stable identifier, and the absolute source path.
 
----
+When there are more platforms than fit on one line, the strip stays on a single row and scrolls horizontally with the wheel; it does not wrap into a multi-line toolbar.
 
-### 3. In-Session Search (Session Search & Locate)
-Full-text search across dialogue turns, tool call logs, and reasoning blocks within session details. Real-time match counting, next/previous navigation, and keyword highlighting, paired with physical database path display for immediate file access.
-
-![Session Search](docs/images/03_deep_search_and_locate_annotated.png)
+![Platform Filter](docs/images/02_platform_matrix_filter.png)
 
 ---
 
-### 4. Billing-aligned Token Usage Statistics
-Reads the **usage the client itself recorded** wherever available (Antigravity: `promptTokenCount / candidatesTokenCount` inside `steps.metadata`; Claude Code: `message.usage` on every assistant record), so the numbers match what you are actually billed. Platforms without recorded usage (WorkBuddy, Trae) fall back to `tiktoken` (`cl100k_base`) content estimation and are marked with `≈` on the card.
+### 3. Search: Sessions and Messages
 
-Every card and the summary expose three figures: **billed total (accumulated input + output), the input/output split, and content volume (deduplicated)**. The last one is typically a fraction of the former, because the agent re-sends the whole context on every turn. Sorting by token volume is supported.
+Global full-text search supports Chinese and English content across platforms. Results are split into three tabs:
 
-![Token Statistics](docs/images/04_token_statistics_popover_annotated.png)
+- **All**: session hits and message hits together;
+- **Sessions**: grouped by session title, platform, and hit count;
+- **Messages**: exact turns inside a session, useful when you remember a sentence rather than a title.
 
----
+The result header reports session hits, message hits, and elapsed time. Session details also have an in-session search field: `Enter` jumps to the next match, `Shift+Enter` goes back.
 
-### 5. Structured & Clean Dialogue Stream
-Expand any session to inspect full chronological dialogue flows. Accurately reconstructs user prompts, model responses, tool call payloads, terminal execution logs, and learned agent memory.
-
-![Chat Stream](docs/images/05_chat_stream_detail_annotated.png)
+![Cross-session search, split into sessions and messages](docs/images/03_search_sessions_messages.png)
 
 ---
 
-### 6. Session Migration Wizard
-Step-by-step wizard to convert sessions into target platform formats (e.g., Antigravity to Claude Code or Cursor). Supports both direct installation into the target IDE directory and standalone JSON export.
+### 4. Token Statistics
 
-![Migration Wizard](docs/images/06_migration_wizard_annotated.png)
+Token numbers prefer usage recorded by the client itself:
+
+- Antigravity reads `promptTokenCount / candidatesTokenCount` from `steps.metadata`;
+- Claude Code reads `message.usage` on assistant records;
+- platforms without recorded usage fall back to `tiktoken` (`cl100k_base`) content-size estimation, marked with `≈` on the card.
+
+This separates “the size of this memory” from “what the agent actually consumed”. The list supports sorting by token quantity; the header keeps both the global total and the current filtered total.
+
+![Token usage and sorting](docs/images/04_token_usage_sort.png)
 
 ---
 
-### 7. Batch Session Management
-A dedicated batch management sub-UI. Filter sessions through intersections of file size (KB/MB thresholds), dialogue step ranges, and historical activity windows, then perform batch migrations or physical deletions to free disk space.
+### 5. Structured Session Detail
 
-![Batch Management](docs/images/07_batch_management_modal_annotated.png)
+Open a session to see the full timeline split into user instruction, thinking, actions, and reply. Tool calls, terminal output, file operations, and MCP calls are available inside the action blocks.
+
+The user instruction shown is the text actually typed by the user. Injected system context, time reminders, task receipts, compaction summaries, CLI commands, and attachment wrappers are moved into separate bubbles with a filtered-character count. Long pasted files collapse by default.
+
+If a turn contains intermediate assistant messages before the final answer, those intermediate messages are demoted into thinking/action; only the final message remains as the reply. That prevents several near-identical “replies” from appearing for one user instruction.
+
+![Session detail timeline](docs/images/05_session_detail.png)
+
+---
+
+### 6. Session Migration
+
+The migration wizard converts a source session into a target format. The current build has 18 target adapters:
+
+`Claude Code`, `Codex`, `PI`, `OMP`, `OpenCode`, `GitHub Copilot`, `Antigravity`, `Cursor`, `Vibe`, `Muse`, `Qwen`, `Kimi`, `Grok`, `Kilo`, `OpenHands`, `Hermes`, `Mastra Code`, `Devin`.
+
+A session can be written into the target platform's user directory or exported as a standalone archive. Before writing, the wizard shows the source platform, event count, file size, and destination; fields that cannot be converted losslessly stay as raw events instead of being dropped.
+
+![Migration wizard](docs/images/06_migration_wizard.png)
+
+---
+
+### 7. Batch Management
+
+Batch management is a separate drawer with filters for platform, storage size (KB/MB), turn count, and last-activity window. Filtered sets can be migrated or deleted in bulk.
+
+Batch deletion also removes the associated index records and sub-agent records; it requires confirmation. Batch migration uses the same destination checks as the single-session flow.
+
+![Batch management](docs/images/07_batch_management.png)
 
 ---
 
 ### 8. Directory Scan & Storage Management
-Visual breakdown of mounted storage root paths, total indexed files, and physical disk usage per platform. Supports dynamically adding custom directories and executing one-click catalog re-indexing.
 
-![Directory Manager](docs/images/08_directory_manager_modal_annotated.png)
+The directory manager lists each platform's physical root, scan status, and indexed session count. Default installation paths are detected automatically; portable installs or custom drives can be mounted manually.
+
+The current workspace has nine roots covering three Antigravity data folders, Claude Code, two Codex roots, GitHub Copilot, and two Trae folders. “Refresh data” re-scans and updates the index without restarting the service.
+
+![Directory manager](docs/images/08_directory_manager.png)
 
 ---
 
 ## Getting Started
 
 ### Prerequisites
-- Windows 10/11 (includes native patches for Windows NTFS file locking and 64-bit Inode overflow)
+
+- Windows 10/11
 - Python 3.10+
+- Node.js 20+ (only for building the frontend)
 
 ### Setup & Launch
+
 ```bash
-# 1. Clone repository
+# 1. Clone the repository
 git clone https://github.com/WilliamGeek/Agents-Memory-Tools.git
 cd Agents-Memory-Tools
 
-# 2. Create virtual environment
+# 2. Create and activate a virtual environment
 python -m venv .venv
 .venv\Scripts\activate
 
 # 3. Install dependencies
 pip install -r requirements.txt
-# Or manually install core packages:
-pip install session-migrate tiktoken tokenizers
 
-# 4. Build frontend workbench (Node.js 20+, exported to frontend/out)
+# 4. Build the frontend workbench (exports to frontend/out)
 cd frontend
 npm install
 npm run build
 cd ..
 
-# 5. Launch unified dashboard (single-port service)
+# 5. Start the single-port service
 python web_app.py
 ```
 
-Once running, navigate to `http://127.0.0.1:18922` in your browser.
-The Python server directly hosts the modern React workbench static export alongside high-performance REST APIs on the same port, eliminating external Node.js daemon processes or proxy configurations. If the static export is absent, it gracefully falls back to the built-in console.
+Open `http://127.0.0.1:18922`. The Python server hosts both the exported React workbench and the API on one port; no extra Node.js daemon or proxy is required. If the frontend export is missing, the built-in console is used as a fallback.
 
-> 💡 **Windows Shortcuts**:
-> - `启动Memory Tools.cmd`: Interactive launch (builds frontend automatically if missing)
-> - `后台静默启动Memory Tools.vbs`: Headless background daemon
-> - `停止Memory Tools.cmd`: Graceful termination of port 18922 processes
+> **Windows shortcuts**
+> - `启动Memory Tools.cmd`: one-click launch; builds the frontend if missing
+> - `后台静默启动Memory Tools.vbs`: headless background launch
+> - `停止Memory Tools.cmd`: stop the local service
 
 ---
 
 ## Session Path Discovery Guide
 
-Memory Tools scans default installation paths on startup. If your tools use non-standard installation directories, configure them as follows:
+Memory Tools scans common installation paths at startup. For custom installations, add the directory in the Directory Manager. The paths below are typical Windows locations; use the ones that actually exist on your machine.
 
 ### 1. Default Storage Locations
 
-| Assistant | Default Windows Path | Primary Storage Type |
+| Assistant | Typical Windows Path | Primary Storage |
 | :--- | :--- | :--- |
-| **Antigravity IDE** | `%USERPROFILE%\.gemini\antigravity\conversations` | `.pb` / `.jsonl` / `brain/` |
-| **Claude Code** | `%USERPROFILE%\.claude.json` and `%USERPROFILE%\.claude\` | `sessions/*.jsonl` |
-| **Trae / Trae SOLO** | `%APPDATA%\Trae CN\User\` and `%USERPROFILE%\.trae-cn\memory` | `state.vscdb` / `session_memory_*.jsonl` |
-| **Cursor** | `%APPDATA%\Cursor\User\workspaceStorage\` | `state.vscdb` |
-| **GitHub Copilot** | `%APPDATA%\Code\User\workspaceStorage\` | `state.vscdb` |
-| **WorkBuddy** | `%USERPROFILE%\.workbuddy\` | `history.jsonl` |
+| **Antigravity IDE** | `%USERPROFILE%\.gemini\antigravity\`, `%USERPROFILE%\.gemini\antigravity-cli\`, `%USERPROFILE%\.gemini\antigravity-ide\` | SQLite / JSONL / `brain/` |
+| **Claude Code** | `%USERPROFILE%\.claude\` | `sessions/*.jsonl`, project history |
+| **Codex** | `%USERPROFILE%\.codex\` or a custom working directory | `sessions/*.jsonl` |
+| **GitHub Copilot** | `%USERPROFILE%\.copilot\`, `%APPDATA%\Code\User\workspaceStorage\` | `state.vscdb` |
+| **Trae / Trae CN** | `%APPDATA%\Trae CN\User\`, `%USERPROFILE%\.trae-cn\memory\` | `state.vscdb`, `session_memory_*.jsonl`, encrypted `database.db` |
+| **WorkBuddy** | `%USERPROFILE%\.workbuddy\projects\` | `*.jsonl`, `subagents/*.jsonl` |
+| **Doubao** | `%LOCALAPPDATA%\Doubao\User Data\Default\.doubao\agent_mode\workspace\.sessions\` | IndexedDB metadata, `trajectory.jsonl`; optional read-only cloud sync |
 
-### 2. Prompting Your Local AI Agent for Paths
+Trae CN writes part of its session body into the encrypted `ModularData\ai-agent\database.db`. That file is not a normal SQLite database; mounting it directly only reveals table structure or empty shells. Export a readable snapshot locally first, then add that snapshot directory to the scanner. Do not commit keys, decrypted databases, or caches containing personal conversation content.
 
-If you are unsure where your IDE stores its data, send the following prompt to your assistant (within Cursor, Claude Code, or Antigravity):
+### 2. Ask Your Local Agent for Paths
+
+If you are unsure where an IDE stores its sessions, send this prompt to the assistant you are currently using:
 
 ```text
-Please inspect the current environment to identify where you (this AI coding tool) store local user conversation history, session databases, and context logs.
-Specifically check:
-1. Dotfiles and hidden folders under %USERPROFILE% (e.g., .cursor, .claude, .gemini);
-2. Relevant workspaceStorage or globalStorage/state.vscdb inside %APPDATA% and %LOCALAPPDATA%;
-3. Return the confirmed absolute directory paths so I can mount them in an external session manager.
+Inspect the current development environment and identify where you (the current AI coding tool) store local user conversation history, session databases, and context caches.
+Check specifically:
+1. Dot-prefixed hidden folders under %USERPROFILE% (for example .cursor, .claude, .gemini, .codex, .trae-cn);
+2. workspaceStorage, globalStorage, or state.vscdb under %APPDATA% and %LOCALAPPDATA%;
+3. Return the confirmed absolute paths and state whether each file is the main database, a log, or a transcript cache.
 ```
 
-Once discovered, add the path under the **📂 扫描目录管理** (Directory Management) modal in Memory Tools and click **刷新会话数据** (Refresh Session Data).
+After collecting the paths, add the root in **Directory Manager** and click **Refresh Session Data**. Indexing is read-only; source sessions are not modified.
+
+### 3. Why Absolute Paths Matter
+
+Every session keeps its source file path, and the detail view exposes a **Reveal Path** action. This is not cosmetic: when format conversion fails, the raw file remains a reliable fallback. You can open it, hand it to another agent, or inspect it manually.
 
 ---
 
@@ -166,10 +212,14 @@ Once discovered, add the path under the **📂 扫描目录管理** (Directory M
 This project is licensed under **[CC BY-NC-SA 4.0 (Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International)](LICENSE)**.
 
 ### Summary of Terms
-- **Permitted**: Individual developers may freely study, run locally, fork, and modify the codebase for personal use.
-- **Prohibited**: Commercial exploitation, packaging for paid distribution, or proprietary redistribution without permission.
-- **ShareAlike**: Derivative works and public modifications must remain under the same or a compatible non-commercial license.
+
+- **Permitted**: individual developers may study, run locally, fork, and modify the codebase for personal use;
+- **Prohibited**: commercial exploitation, paid packaging, or proprietary redistribution without permission;
+- **ShareAlike**: public derivatives must remain under the same or a compatible non-commercial license and retain attribution.
+
+The project name, interface design, and documentation are maintained by the author. When reusing code or screenshots, keep the repository link and copyright notice.
 
 ### Acknowledgments
-- Underlying migration protocols reference [session-migrate](https://github.com/mizchi/session-migrate) (MIT License).
-- Token figures prefer the usage records written by each client; estimation falls back to OpenAI's `tiktoken`. The optional HuggingFace `tokenizers` dependency is reserved for open-model vocabularies.
+
+- Underlying migration abstractions reference [session-migrate](https://github.com/mizchi/session-migrate) (MIT License); thanks to its authors.
+- Token figures prefer usage records written by each client, with OpenAI `tiktoken` as the fallback estimator. The optional HuggingFace `tokenizers` dependency is retained for open-model vocabularies.

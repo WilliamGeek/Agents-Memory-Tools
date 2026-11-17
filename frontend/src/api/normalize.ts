@@ -154,6 +154,10 @@ export function normalizeSessionList(raw: Raw): SessionListResponse {
   const sessions = list.map(normalizeSession);
   const meta = raw?.meta && typeof raw.meta === 'object' ? raw.meta : null;
   const pageCount = num(raw?.count) || sessions.length;
+  const rawStats = raw?.stats && typeof raw.stats === 'object' ? raw.stats : null;
+  const stats = rawStats
+    ? { bytes: num(rawStats.bytes), tokens: num(rawStats.tokens) }
+    : undefined;
 
   if (!meta) {
     return {
@@ -164,6 +168,7 @@ export function normalizeSessionList(raw: Raw): SessionListResponse {
       limit: sessions.length,
       hasMore: false,
       snapshot: '',
+      stats,
     };
   }
 
@@ -175,6 +180,7 @@ export function normalizeSessionList(raw: Raw): SessionListResponse {
     limit: num(meta.limit) || sessions.length,
     hasMore: Boolean(meta.has_more),
     snapshot: str(meta.snapshot),
+    stats,
   };
 }
 
@@ -205,6 +211,8 @@ export function normalizeDetail(raw: Raw): SessionDetail {
     // 后端实际字段是 has_more；has_more_turns 是早期设计稿的命名，两者都认
     hasMoreTurns: Boolean(raw.has_more ?? raw.has_more_turns),
     nextTurnOffset: num(raw.next_turn_offset),
+    refreshPending: Boolean(raw.refresh_pending),
+    cloudLink: str(raw.cloud_link),
     turns,
     turnIndexes,
     eventIndexes,
@@ -219,6 +227,7 @@ export function normalizeSearchResult(raw: Raw): SearchResultItem {
     sessionTitle: str(raw.session_title),
     sessionFormat: str(raw.session_format),
     role: str(raw.role),
+    kind: str(raw.kind),
     turnIndex: num(raw.turn_index),
     timestamp: str(raw.timestamp),
     snippet: str(raw.snippet),

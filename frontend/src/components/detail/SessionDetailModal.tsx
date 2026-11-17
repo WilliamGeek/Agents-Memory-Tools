@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronUp,
   ChevronDown,
@@ -57,6 +57,10 @@ interface ToolItem {
 interface ReplyItem {
   text: string;
   ts: string;
+  /** 绝对事件下标（回源用） */
+  eventIndex: number;
+  /** 服务端已藏掉的字符数 */
+  hiddenChars: number;
 }
 
 interface Turn {
@@ -152,9 +156,40 @@ function buildTurns(events: SessionEvent[]): Turn[] {
     }
 
     // assistant message
-    if (evt.text.trim()) turn.replies.push({ text: evt.text, ts: evt.timestamp });
+    if (evt.text.trim()) {
+      turn.replies.push({
+        text: evt.text,
+        ts: evt.timestamp,
+        eventIndex: evt.eventIndex,
+        hiddenChars: evt.truncatedChars,
+      });
+    }
   }
 
+  return turns;
+}
+
+/**
+ * 同一轮里的过程性 assistant message（例如"我先定位…"、"验证发现…"）
+ * 不是最终回复；把除最后一条以外的 assistant message 归入“思考过程”。
+ * 只在轮次合并完成后执行，避免一条轮次跨分片时把中途消息误判成回复。
+ */
+function demoteAssistantProgress(turns: Turn[]): Turn[] {
+  for (const turn of turns) {
+    if (turn.replies.length <= 1) continue;
+    const final = turn.replies[turn.replies.length - 1];
+    const interim = turn.replies.slice(0, -1);
+    for (const reply of interim) {
+      if (!reply.text.trim()) continue;
+      turn.thinks.push({
+        text: reply.text,
+        ts: reply.ts,
+        eventIndex: reply.eventIndex,
+        hiddenChars: reply.hiddenChars,
+      });
+    }
+    turn.replies = [final];
+  }
   return turns;
 }
 
@@ -288,7 +323,7 @@ function buildShardTurns(shards: Shard[]): Turn[] {
       });
     });
   }
-  return [...byIndex.values()].sort((a, b) => a.index - b.index);
+  return demoteAssistantProgress([...byIndex.values()].sort((a, b) => a.index - b.index));
 }
 
 /* ------------------------------------------------------------------ */
@@ -332,6 +367,23 @@ function CopyButton({
     </button>
   );
 }
+
+const MemoMarkdown = memo(function MemoMarkdown({
+  text,
+  highlight,
+  className = '',
+  onClick,
+  title,
+}: {
+  text: string;
+  highlight: string;
+  className?: string;
+  onClick?: React.MouseEventHandler<HTMLDivElement>;
+  title?: string;
+}) {
+  const html = useMemo(() => ({ __html: renderMarkdown(text, highlight) }), [text, highlight]);
+  return <div className={className} onClick={onClick} title={title} dangerouslySetInnerHTML={html} />;
+});
 
 /** 长文本分片，避免一次渲染上百万字符。
  *
@@ -574,6 +626,8 @@ export function SessionDetailModal() {
   const moreRef = useRef<HTMLDivElement>(null);
   const shardsRef = useRef<Shard[]>([]);
   const inflightRef = useRef<Set<string>>(new Set());
+  /** 豆包云端详情刷新次数：避免后台同步超过 24s 时无限重试 */
+  const refreshRetryRef = useRef(0);
 
   const open = Boolean(activeDetailCatalogId);
   const cid = activeDetailCatalogId;
@@ -640,6 +694,26 @@ export function SessionDetailModal() {
       cancelled = true;
     };
   }, [cid, activeDetailTurnIndex, reloadKey, appendShard]);
+
+  /* 切换会话时重置云端刷新计数 */
+  useEffect(() => {
+    refreshRetryRef.current = 0;
+  }, [cid]);
+
+  /* 豆包云端详情：后台正在拉取最新正文时，每 3s 自动重取一次（最多 8 次）。 */
+  useEffect(() => {
+    if (!detail) return;
+    if (!detail.refreshPending) {
+      refreshRetryRef.current = 0;
+      return;
+    }
+    if (!cid || refreshRetryRef.current >= 8) return;
+    const timer = setTimeout(() => {
+      refreshRetryRef.current += 1;
+      setReloadKey((k) => k + 1);
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [cid, detail?.refreshPending]);
 
   const turns = useMemo(() => buildShardTurns(shards), [shards]);
 
@@ -809,11 +883,41 @@ export function SessionDetailModal() {
     [totalTurns, loadShard]
   );
 
+  const hitMarksRef = useRef<HTMLElement[]>([]);
+  const [hitCount, setHitCount] = useState(0);
+
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || !chatQuery.trim()) {
+      hitMarksRef.current = [];
+      setHitCount(0);
+      return;
+    }
+    const marks = Array.from(root.querySelectorAll<HTMLElement>('mark.chat-hit'));
+    hitMarksRef.current = marks;
+    setHitCount(marks.length);
+    const activeIdx = marks.length ? Math.min(hitIdx, marks.length - 1) : 0;
+    marks.forEach((m, i) => {
+      m.classList.toggle('chat-hit-active', i === activeIdx);
+    });
+  }, [chatQuery, turns, expandAll, loading, rawOpen, hitIdx]);
+
   const gotoHit = (delta: number) => {
+    const marks = hitMarksRef.current;
+    if (marks.length > 0) {
+      const next = (hitIdx + delta + marks.length) % marks.length;
+      setHitIdx(next);
+      const targetEl = marks[next];
+      targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const turnSec = targetEl.closest<HTMLElement>('section[id^="turn-"]');
+      if (turnSec) {
+        const turnNum = Number(turnSec.id.replace('turn-', ''));
+        if (Number.isFinite(turnNum) && turnNum > 0) setFocusTurn(turnNum);
+      }
+      return;
+    }
     if (!hits.length) return;
-    const next = (hitIdx + delta + hits.length) % hits.length;
-    setHitIdx(next);
-    focusOn(hits[next]);
+    focusOn(hits[0]);
   };
 
   const jumpTo = (n: number) => {
@@ -1045,11 +1149,11 @@ export function SessionDetailModal() {
         {chatQuery && (
           <div className="flex items-center gap-1 text-[11.5px] text-ink-muted tnum">
             <span>
-              {hits.length ? Math.min(hitIdx + 1, hits.length) : 0}/{hits.length}
+              {hitCount ? `${Math.min(hitIdx + 1, hitCount)}/${hitCount}` : hits.length ? `0/${hits.length} 轮` : '0/0'}
             </span>
             <button
               onClick={() => gotoHit(-1)}
-              disabled={!hits.length}
+              disabled={!hitCount && !hits.length}
               className="p-0.5 rounded hover:text-ink disabled:opacity-30"
               title="上一个匹配 (Shift+Enter)"
             >
@@ -1057,7 +1161,7 @@ export function SessionDetailModal() {
             </button>
             <button
               onClick={() => gotoHit(1)}
-              disabled={!hits.length}
+              disabled={!hitCount && !hits.length}
               className="p-0.5 rounded hover:text-ink disabled:opacity-30"
               title="下一个匹配 (Enter)"
             >
@@ -1106,6 +1210,13 @@ export function SessionDetailModal() {
           </div>
         )}
 
+        {!loading && !error && detail?.refreshPending && (
+          <div className="flex items-start gap-2 rounded-lg border border-amber-400/30 bg-amber-400/5 px-3.5 py-2.5 text-[12px] leading-relaxed text-amber-200">
+            <Loader2 size={14} className="mt-0.5 shrink-0 animate-spin" />
+            <span>云端正文正在同步，完成后会自动刷新…</span>
+          </div>
+        )}
+
         {!loading && !error && turns.length === 0 && (
           <div className="py-20 text-center text-[12.5px] text-ink-muted">
             该会话没有可展示的对话记录
@@ -1148,9 +1259,10 @@ export function SessionDetailModal() {
                     </span>
                   </div>
 
-                  <div
+                  <MemoMarkdown
+                    text={turn.user.text}
+                    highlight={chatQuery}
                     className="md-body md-body-inverse"
-                    dangerouslySetInnerHTML={{ __html: renderMarkdown(turn.user.text, chatQuery) }}
                   />
 
                   {rawOpen[turn.index] && (
@@ -1234,7 +1346,9 @@ export function SessionDetailModal() {
                       <CopyButton text={rep.text} label="复制该段回复" />
                     </span>
                   </div>
-                  <div
+                  <MemoMarkdown
+                    text={rep.text}
+                    highlight={chatQuery}
                     className="md-body"
                     onClick={(e) => {
                       const pre = (e.target as HTMLElement).closest('pre');
@@ -1246,7 +1360,6 @@ export function SessionDetailModal() {
                         .catch(() => toast.error('复制失败'));
                     }}
                     title="点击代码块可复制"
-                    dangerouslySetInnerHTML={{ __html: renderMarkdown(rep.text, chatQuery) }}
                   />
                 </div>
               ))}

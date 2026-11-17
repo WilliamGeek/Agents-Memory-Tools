@@ -67,7 +67,7 @@ export function renderMarkdown(source: string, highlight?: string): string {
       } else {
         inCode = false;
         out.push(
-          `<pre data-lang="${escapeHtml(codeLang)}"><code>${escapeHtml(codeBuf.join('\n'))}</code></pre>`
+          `<pre data-lang="${escapeHtml(codeLang)}"><code>${markHits(escapeHtml(codeBuf.join('\n')), highlight)}</code></pre>`
         );
       }
       i += 1;
