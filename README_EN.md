@@ -25,12 +25,9 @@ That creates three practical problems:
 2. **Some IDEs have no global history search.** Once a few hundred sessions accumulate, finding a decision or an old fix turns into manual scrolling.
 3. **Format conversion has limits.** Vendor protocols change faster than converters can follow. The original session file, however, is usually still on disk.
 
-Memory Tools uses a **dual-track design**:
+Memory Tools uses a **dual-track design**: the conversion track writes format-aware output into supported target directories; the absolute-path track keeps every session’s source file path, so an unsupported format can still be handed to another agent without conversion.
 
-- **Conversion track**: schema-aware conversion, target-directory writing, and standalone export for supported platforms.
-- **Absolute-path track**: every indexed session keeps its original file path and a “reveal in file manager” action. When a platform is not supported, the raw file can still be handed to another agent without conversion.
-
-It is not a replacement for the IDE and does not take over your accounts. It turns existing local sessions into a searchable, auditable, portable index.
+It does not replace the IDE or take over your accounts. It turns local sessions into a searchable, portable index.
 
 ---
 
@@ -49,8 +46,6 @@ On startup, the workbench scans configured roots and summarizes platform distrib
 ### 2. Platform Filtering
 
 The platform strip provides entries for Antigravity, Claude Code, Codex, GitHub Copilot, WorkBuddy, Trae, and Doubao. Each session card shows steps, file size, estimated tokens, a stable identifier, and the absolute source path.
-
-When there are more platforms than fit on one line, the strip stays on a single row and scrolls horizontally with the wheel; it does not wrap into a multi-line toolbar.
 
 ![Platform Filter](docs/images/02_platform_matrix_filter.png)
 
