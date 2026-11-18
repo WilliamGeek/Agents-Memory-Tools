@@ -526,14 +526,40 @@ _DOUBAO_DETAIL_REFRESH_LAST: dict[str, float] = {}
 
 
 def _doubao_cloud_cid_for_catalog(cid: str) -> str:
-    """把 db_<前16位> 还原成云端 manifest 的完整 conversation_id。"""
+    """把 db_<前16位> 还原成完整的 conversation_id。
+
+    先查云端同步仓；云端还没有这个新会话时，再从本地 IndexedDB 元数据
+    还原。后者很重要：否则新会话第一次打开时找不到 full cid，就不会触发
+    --only 同步，详情只能显示 IndexedDB 里的当前任务态（正文被截断）。
+    """
     if not cid.startswith("db_"):
         return ""
     prefix = cid[3:]
     for full in doubao_cloud.load().keys():
         if str(full).startswith(prefix):
             return str(full)
+    try:
+        local = doubao_idb.load(LOCAL_APPDATA / "Doubao" / "User Data")
+    except Exception:
+        local = {}
+    for full in local.keys():
+        if str(full).startswith(prefix):
+            return str(full)
     return ""
+
+
+def _doubao_idb_mtime() -> float:
+    """返回豆包 IndexedDB LevelDB 目录的最新写入时间。"""
+    latest = 0.0
+    root = LOCAL_APPDATA / "Doubao" / "User Data"
+    try:
+        for idb_dir in doubao_idb.leveldb_dirs(root):
+            for p in idb_dir.glob("*"):
+                if p.is_file():
+                    latest = max(latest, p.stat().st_mtime)
+    except Exception:
+        pass
+    return latest
 
 
 def _maybe_refresh_doubao_detail(cid: str) -> bool:
@@ -542,9 +568,14 @@ def _maybe_refresh_doubao_detail(cid: str) -> bool:
     返回 True 表示本轮详情返回的是旧缓存，客户端应稍后重取；False 表示无需刷新。
     """
     full = _doubao_cloud_cid_for_catalog(cid)
-    if not full or not doubao_cloud.has_cookie_cache():
+    if not full:
         return False
-    if not doubao_cloud.is_stale(full, DOUBAO_DETAIL_REFRESH_SECONDS):
+    entry = doubao_cloud.entry(full)
+    checked_at = int(entry.get("checked_at") or entry.get("synced_at") or 0)
+    idb_mtime = _doubao_idb_mtime()
+    # manifest 的 120 秒阈值用于兜底；如果 IndexedDB 在最近一次检查后又
+    # 有新写入（新消息/新任务态），即使不足 120 秒也立刻补拉云端正文。
+    if not doubao_cloud.is_stale(full, DOUBAO_DETAIL_REFRESH_SECONDS) and idb_mtime <= checked_at:
         return False
 
     # 同一会话短时间内连点详情时，不要把 --only 任务堆起来。
@@ -4084,11 +4115,15 @@ def get_doubao_session_messages(session_match: dict[str, Any]) -> list[dict[str,
     """解析豆包会话的消息与工具事件列表。"""
     events: list[dict[str, Any]] = []
     source_kind = session_match.get("source_kind", "")
+    cid = str(session_match.get("session_id") or "")
+    # 云端同步完成后，快照可能仍是旧的 IndexedDB 记录；详情必须优先使用
+    # 云端完整正文，否则会出现「列表显示已同步，详情仍只有 3 条」的假象。
+    if source_kind == "indexeddb" and doubao_cloud.get(cid).get("messages"):
+        source_kind = "cloud"
     fp = Path(str(session_match.get("file_path") or ""))
     started_at = str(session_match.get("started_at") or "")
 
     if source_kind == "cloud":
-        cid = str(session_match.get("session_id") or "")
         item = doubao_cloud.get(cid)
         for m in item.get("messages") or []:
             text = str(m.get("text") or "").strip()
@@ -5889,6 +5924,34 @@ class RequestHandler(BaseHTTPRequestHandler):
             match = next(
                 (d for d in get_doubao_sessions() if d["session_id"].startswith(sid)), None
             )
+            if not match:
+                # IndexedDB 里的新会话可能只有“当前任务态”而没有可展示正文，
+                # 常规列表会把它过滤掉；但云端仍有完整正文。详情必须能按
+                # catalog_id 找到它，否则 _maybe_refresh 已经触发的云端同步
+                # 还没落盘就先返回 404。
+                local = doubao_idb.load(LOCAL_APPDATA / "Doubao" / "User Data")
+                full = next((k for k in local.keys() if str(k).startswith(sid)), "")
+                if full:
+                    item = local.get(full) or {}
+                    cached_msgs = [
+                        m["text"] for m in item.get("messages") or []
+                        if m.get("kind", "message") == "message" and m.get("text")
+                    ]
+                    match = {
+                        "catalog_id": cid,
+                        "format": "doubao",
+                        "session_id": str(full),
+                        "title": item.get("title") or f"豆包对话 ({str(full)[-8:]})",
+                        "started_at": "",
+                        "records": len(cached_msgs),
+                        "bytes": 0,
+                        "file_path": item.get("dir") or str(LOCAL_APPDATA / "Doubao" / "User Data"),
+                        "all_files": [item.get("dir") or ""],
+                        "source_kind": "indexeddb",
+                        "cached_msgs": cached_msgs,
+                        "exists": True,
+                        "mtime": item.get("ts") or 0,
+                    }
             if not match:
                 raise detail_service.DetailError("Doubao session not found", 404)
             return {

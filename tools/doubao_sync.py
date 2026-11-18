@@ -125,6 +125,50 @@ def _decrypt_v10(key: bytes, blob: bytes) -> str:
     return plain.decode("utf-8", errors="ignore")
 
 
+def _shared_copy(files: list[Path], dest_dir: Path) -> dict[str, Path]:
+    """用带 FILE_SHARE_* 的 Win32 句柄复制被浏览器占用的文件。
+
+    Chromium 打开 Cookies SQLite 时通常允许读写共享，但 Python 的
+    open() 会以更严格的共享模式失败；VSS 在非管理员/服务未启动时也不可用。
+    这里用 CreateFileW(GENERIC_READ, FILE_SHARE_READ|WRITE|DELETE) 直接读。
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    k32 = ctypes.windll.kernel32
+    k32.CreateFileW.restype = ctypes.c_void_p
+    k32.ReadFile.restype = ctypes.c_int
+    generic_read = 0x80000000
+    share = 0x1 | 0x2 | 0x4
+    open_existing = 3
+    normal = 0x80
+    pairs: dict[str, Path] = {}
+    for idx, src in enumerate(files):
+        out = dest_dir / f"{idx}_{src.name}"
+        handle = k32.CreateFileW(
+            str(src), generic_read, share, None, open_existing, normal, None
+        )
+        invalid = ctypes.c_void_p(-1).value
+        if not handle or handle == invalid:
+            # 某个 profile 的 Cookie 库可能被以不共享方式占用；跳过它，
+            # 只从可读的 profile 里取 Cookie，避免整体退回 VSS。
+            continue
+        try:
+            with open(out, "wb") as fh:
+                buf = ctypes.create_string_buffer(1 << 20)
+                while True:
+                    read = ctypes.c_ulong(0)
+                    if not k32.ReadFile(handle, buf, len(buf), ctypes.byref(read), None):
+                        raise OSError(f"ReadFile failed for {src}")
+                    if read.value == 0:
+                        break
+                    fh.write(buf.raw[: read.value])
+        finally:
+            k32.CloseHandle(handle)
+        pairs[str(src)] = out
+    if not pairs:
+        raise OSError("共享句柄复制没有可读文件")
+    return pairs
+
+
 def _vss_copy(files: list[Path], dest_dir: Path) -> dict[str, Path]:
     """用卷影副本只读复制被独占锁定的文件，完成后删除快照。"""
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -165,7 +209,7 @@ def _vss_copy(files: list[Path], dest_dir: Path) -> dict[str, Path]:
 
 
 def _readable_files(paths: list[Path]) -> tuple[dict[str, Path], Path | None]:
-    """优先直接读；失败则用 VSS。返回 (源路径字符串 -> 可读路径, 待清理目录)。"""
+    """优先直接读；失败则共享句柄复制，最后才用 VSS。"""
     direct: dict[str, Path] = {}
     for p in paths:
         try:
@@ -176,6 +220,13 @@ def _readable_files(paths: list[Path]) -> tuple[dict[str, Path], Path | None]:
             pass
     if len(direct) == len(paths):
         return direct, None
+    tmp = CACHE_DIR / "_shared"
+    if tmp.exists():
+        shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        return _shared_copy(paths, tmp), tmp
+    except Exception:
+        pass
     tmp = CACHE_DIR / "_vss"
     if tmp.exists():
         shutil.rmtree(tmp, ignore_errors=True)
@@ -194,7 +245,9 @@ def collect_cookies() -> dict[str, str]:
         key = _master_key(readable[str(state_file)])
         cookies: dict[str, str] = {}
         for db in db_files:
-            path = readable[str(db)]
+            path = readable.get(str(db))
+            if path is None:
+                continue
             try:
                 conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
                 rows = conn.execute(
