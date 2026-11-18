@@ -520,7 +520,7 @@ def start_doubao_sync(full: bool = False, only: str = "", limit: int = 0) -> boo
 
 
 # 详情打开时的单会话按需刷新阈值；全局 6 小时兜底仍由 _maybe_autosync_doubao 负责。
-DOUBAO_DETAIL_REFRESH_SECONDS = 120
+DOUBAO_DETAIL_REFRESH_SECONDS = 20
 _DOUBAO_DETAIL_REFRESH_LOCK = threading.Lock()
 _DOUBAO_DETAIL_REFRESH_LAST: dict[str, float] = {}
 
@@ -548,20 +548,6 @@ def _doubao_cloud_cid_for_catalog(cid: str) -> str:
     return ""
 
 
-def _doubao_idb_mtime() -> float:
-    """返回豆包 IndexedDB LevelDB 目录的最新写入时间。"""
-    latest = 0.0
-    root = LOCAL_APPDATA / "Doubao" / "User Data"
-    try:
-        for idb_dir in doubao_idb.leveldb_dirs(root):
-            for p in idb_dir.glob("*"):
-                if p.is_file():
-                    latest = max(latest, p.stat().st_mtime)
-    except Exception:
-        pass
-    return latest
-
-
 def _maybe_refresh_doubao_detail(cid: str) -> bool:
     """详情请求前调用：单会话过期则触发一次 --only 后台同步。
 
@@ -570,12 +556,7 @@ def _maybe_refresh_doubao_detail(cid: str) -> bool:
     full = _doubao_cloud_cid_for_catalog(cid)
     if not full:
         return False
-    entry = doubao_cloud.entry(full)
-    checked_at = int(entry.get("checked_at") or entry.get("synced_at") or 0)
-    idb_mtime = _doubao_idb_mtime()
-    # manifest 的 120 秒阈值用于兜底；如果 IndexedDB 在最近一次检查后又
-    # 有新写入（新消息/新任务态），即使不足 120 秒也立刻补拉云端正文。
-    if not doubao_cloud.is_stale(full, DOUBAO_DETAIL_REFRESH_SECONDS) and idb_mtime <= checked_at:
+    if not doubao_cloud.is_stale(full, DOUBAO_DETAIL_REFRESH_SECONDS):
         return False
 
     # 同一会话短时间内连点详情时，不要把 --only 任务堆起来。
