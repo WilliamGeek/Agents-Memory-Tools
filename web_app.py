@@ -571,9 +571,20 @@ def _maybe_refresh_doubao_detail(cid: str) -> bool:
 
 
 def _maybe_autosync_doubao() -> None:
-    """有 Cookie 缓存且距上次同步超过 6 小时时，后台增量同步一次。"""
+    """有 Cookie 缓存时，云端缓存覆盖不足或距上次同步超过 6 小时则后台同步。"""
     try:
         if not doubao_cloud.has_cookie_cache():
+            return
+        # 首次运行/换机器时，云端缓存可能只有一两条，而本地 IndexedDB 已经
+        # 有几十条会话。此时列表会大量显示“1 步”的当前任务态，必须先把
+        # 云端会话补全，而不是等 6 小时后的全量兜底。
+        try:
+            cloud_count = len(doubao_cloud.load())
+            local_count = len(doubao_idb.load(LOCAL_APPDATA / "Doubao" / "User Data"))
+        except Exception:
+            cloud_count, local_count = 0, 0
+        if cloud_count < local_count:
+            start_doubao_sync()
             return
         if time.time() - doubao_cloud.last_sync_ts() < DOUBAO_AUTOSYNC_SECONDS:
             return
