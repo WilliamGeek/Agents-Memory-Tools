@@ -257,6 +257,64 @@ def _install_antigravity_limits_compat() -> None:
 
 _install_antigravity_limits_compat()
 
+
+def _install_antigravity_snapshot_compat() -> None:
+    """避免 Antigravity 空库在 Windows 临时目录清理时抛 WinError 32。
+
+    session-migrate 用 TemporaryDirectory 做一致性快照；SQLite 备份结束后，
+    某些空库或被杀软扫描的库仍会短暂占用 snapshot.db，上下文退出时清理失败，
+    最终表现为详情接口 500。这里保留原有快照逻辑，只把临时目录改为允许清理
+    失败（文件句柄释放后由系统回收），不改变读取到的字节。
+    """
+    try:
+        from session_migrate.formats import antigravity as _ag
+        import stat
+    except Exception:
+        return
+    if getattr(_ag, "_snapshot_compat", False):
+        return
+
+    def safe_snapshot(path):
+        source = Path(path).expanduser()
+        try:
+            info = source.lstat()
+        except OSError as exc:
+            raise _ag.SessionMigrateError("cannot inspect Antigravity conversation database") from exc
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise _ag.SessionMigrateError("Antigravity conversation source must be a regular file")
+        if info.st_size > _ag.MAX_NATIVE_BYTES:
+            raise _ag.SessionMigrateError("Antigravity conversation exceeds the database safety limit")
+
+        with tempfile.TemporaryDirectory(
+            prefix="session-migrate-antigravity-snapshot-",
+            ignore_cleanup_errors=True,
+        ) as directory:
+            target = Path(directory) / "snapshot.db"
+            uri = f"file:{urllib.parse.quote(str(source.resolve()), safe='/')}?mode=ro"
+            try:
+                origin = sqlite3.connect(uri, uri=True, timeout=5)
+                destination = sqlite3.connect(target)
+                try:
+                    origin.execute("PRAGMA trusted_schema=OFF")
+                    origin.backup(destination)
+                finally:
+                    destination.close()
+                    origin.close()
+                data = target.read_bytes()
+            except (OSError, sqlite3.Error) as exc:
+                raise _ag.SessionMigrateError(
+                    "cannot make a consistent Antigravity database snapshot"
+                ) from exc
+        if not data or len(data) > _ag.MAX_NATIVE_BYTES:
+            raise _ag.SessionMigrateError("Antigravity database snapshot violates the safety limit")
+        return data
+
+    _ag.snapshot_database_bytes = safe_snapshot
+    _ag._snapshot_compat = True
+
+
+_install_antigravity_snapshot_compat()
+
 PORT = 18922
 # 允许通过环境变量 / 命令行覆盖端口（多实例自测用；默认仍是 18922，行为不变）
 try:
@@ -687,7 +745,7 @@ def estimate_text_tokens(text: str) -> int:
 # 长会话下两者必定差数倍。因此优先读记录值，估算值退化为 content_tokens 备用指标。
 # ---------------------------------------------------------------------------
 # 缓存签名带版本号：口径变更时旧缓存自动失效，不会沿用历史错误值。
-TOKEN_CACHE_VERSION = 4
+TOKEN_CACHE_VERSION = 5
 
 
 def _pb_iter(buf: bytes, stop_after: int | None = None):
@@ -865,9 +923,17 @@ def _workbuddy_recorded_usage(jsonl_path: Path) -> dict[str, int] | None:
     * rawUsage 缺失时退回 agents SDK 的 usage（inputTokens/outputTokens），
       同样按 messageId 去重。
     """
-    agg = {"input": 0, "output": 0, "thoughts": 0, "fixed": 0, "calls": 0}
-    by_request: dict[str, tuple[int, int, int]] = {}
-    unkeyed: list[tuple[int, int, int]] = []
+    agg = {
+        "input": 0,
+        "output": 0,
+        "thoughts": 0,
+        "cache_read": 0,
+        "cache_miss": 0,
+        "fixed": 0,
+        "calls": 0,
+    }
+    by_request: dict[str, tuple[int, int, int, int, int]] = {}
+    unkeyed: list[tuple[int, int, int, int, int]] = []
     try:
         with open(jsonl_path, "r", encoding="utf-8", errors="ignore") as fh:
             for idx, line in enumerate(fh):
@@ -883,13 +949,24 @@ def _workbuddy_recorded_usage(jsonl_path: Path) -> dict[str, int] | None:
                 pd = rec.get("providerData")
                 pd = pd if isinstance(pd, dict) else {}
                 raw = pd.get("rawUsage")
-                prompt = completion = thoughts = 0
+                prompt = completion = thoughts = cache_read = cache_miss = 0
                 if isinstance(raw, dict):
                     prompt = int(raw.get("prompt_tokens") or 0)
                     completion = int(raw.get("completion_tokens") or 0)
                     details = raw.get("completion_tokens_details")
                     if isinstance(details, dict):
                         thoughts = int(details.get("reasoning_tokens") or 0)
+                    prompt_details = raw.get("prompt_tokens_details")
+                    prompt_details = prompt_details if isinstance(prompt_details, dict) else {}
+                    cache_read = int(
+                        raw.get("prompt_cache_hit_tokens")
+                        or prompt_details.get("cached_tokens")
+                        or 0
+                    )
+                    cache_read = min(max(cache_read, 0), max(prompt, 0))
+                    cache_miss = int(raw.get("prompt_cache_miss_tokens") or 0)
+                    if cache_miss <= 0:
+                        cache_miss = max(prompt - cache_read, 0)
                 else:
                     usage = rec.get("usage")
                     if not isinstance(usage, dict):
@@ -899,22 +976,25 @@ def _workbuddy_recorded_usage(jsonl_path: Path) -> dict[str, int] | None:
                     details = usage.get("outputTokensDetails") or usage.get("completion_tokens_details")
                     if isinstance(details, dict):
                         thoughts = int(details.get("reasoningTokens") or details.get("reasoning_tokens") or 0)
+                    cache_miss = prompt
                 if prompt + completion <= 0:
                     continue
                 key = str(rec.get("id") or pd.get("messageId") or "").strip()
-                triple = (prompt, completion, thoughts)
+                usage_tuple = (prompt, completion, thoughts, cache_read, cache_miss)
                 if key:
                     prev = by_request.get(key)
                     if prev is None or prompt + completion > prev[0] + prev[1]:
-                        by_request[key] = triple
+                        by_request[key] = usage_tuple
                 else:
-                    unkeyed.append(triple)
+                    unkeyed.append(usage_tuple)
     except Exception:
         return None
-    for prompt, completion, thoughts in list(by_request.values()) + unkeyed:
+    for prompt, completion, thoughts, cache_read, cache_miss in list(by_request.values()) + unkeyed:
         agg["input"] += prompt
         agg["output"] += completion
         agg["thoughts"] += thoughts
+        agg["cache_read"] += cache_read
+        agg["cache_miss"] += cache_miss
         agg["calls"] += 1
     if agg["calls"] <= 0 or agg["input"] <= 0:
         return None
@@ -953,6 +1033,9 @@ def _token_fields(tok: dict[str, Any]) -> dict[str, Any]:
         "output_tokens": tok.get("output_tokens", 0),
         "thoughts_tokens": tok.get("thoughts_tokens", 0),
         "content_tokens": tok.get("content_tokens", tok.get("tokens", 0)),
+        "cache_read_tokens": tok.get("cache_read_tokens", 0),
+        "cache_miss_tokens": tok.get("cache_miss_tokens", 0),
+        "fresh_tokens": tok.get("fresh_tokens", 0),
         "usage_source": tok.get("usage_source", "estimated"),
     }
 
@@ -966,6 +1049,9 @@ def _token_result_from_cache(cached: dict[str, Any]) -> dict[str, int | str]:
         "output_tokens": int(cached.get("output_tokens") or 0),
         "thoughts_tokens": int(cached.get("thoughts_tokens") or 0),
         "content_tokens": int(cached.get("content_tokens") or cached.get("tokens") or 0),
+        "cache_read_tokens": int(cached.get("cache_read_tokens") or 0),
+        "cache_miss_tokens": int(cached.get("cache_miss_tokens") or 0),
+        "fresh_tokens": int(cached.get("fresh_tokens") or 0),
         "calls": int(cached.get("calls") or 0),
         "usage_source": str(cached.get("usage_source") or "estimated"),
     }
@@ -1146,6 +1232,10 @@ def compute_session_tokens(
     if recorded:
         billed_in = int(recorded.get("input") or 0)
         billed_out = int(recorded.get("output") or 0)
+        cache_read = int(recorded.get("cache_read") or 0)
+        cache_miss = int(recorded.get("cache_miss") or 0)
+        if cache_miss <= 0:
+            cache_miss = max(billed_in - cache_read, 0)
         res: dict[str, int | str] = {
             "tokens": billed_in + billed_out,
             # 兼容旧前端字段：chat_tokens 保持「模型产出」，aux_tokens 保持「输入侧」
@@ -1155,6 +1245,9 @@ def compute_session_tokens(
             "output_tokens": billed_out,
             "thoughts_tokens": int(recorded.get("thoughts") or 0),
             "content_tokens": content_t,
+            "cache_read_tokens": cache_read,
+            "cache_miss_tokens": cache_miss,
+            "fresh_tokens": cache_miss + billed_out,
             "calls": int(recorded.get("calls") or 0),
             "usage_source": "recorded",
         }
@@ -1167,6 +1260,9 @@ def compute_session_tokens(
             "output_tokens": 0,
             "thoughts_tokens": 0,
             "content_tokens": content_t,
+            "cache_read_tokens": 0,
+            "cache_miss_tokens": 0,
+            "fresh_tokens": content_t,
             "calls": 0,
             "usage_source": "estimated",
         }
@@ -1652,6 +1748,7 @@ _WB_SYS_REMINDER_RE = re.compile(r"<system-reminder\b[^>]*>.*?</system-reminder>
 _WB_TASK_NOTIF_RE = re.compile(r"<task-notification\b[^>]*>.*?</task-notification>", re.S | re.I)
 _WB_HISTORY_SUMMARY_RE = re.compile(r"<conversation_history_summary\b[^>]*>.*?</conversation_history_summary>", re.S | re.I)
 _WB_QUERY_RE = re.compile(r"<user_query\s*>(.*?)</user_query\s*>", re.S | re.I)
+_WB_TEAM_RE = re.compile(r"<teammate-message\b([^>]*)>(.*?)</teammate-message>", re.S | re.I)
 _WB_SYS_NOTE_RE = re.compile(r"^\[SYSTEM NOTIFICATION - NOT USER INPUT\][^\n]*$", re.I | re.M)
 _WB_TASKOUT_HINT_RE = re.compile(r"^Use the TaskOutput tool[^\n]*$", re.I | re.M)
 _WB_LONG_QUOTE_OPEN_RE = re.compile(r"</?long_text_quote\b[^>]*>", re.I)
@@ -1705,6 +1802,60 @@ def _wb_tidy_visible(text: str) -> str:
     return text.strip()
 
 
+def _wb_team_message(raw: str) -> tuple[str, str]:
+    """拆出 WorkBuddy 团队派发消息的 summary 与任务正文。
+
+    team-lead 给子代理的第一条 role=user 记录通常长这样：
+    `<teammate-message teammate_id="team-lead" summary="Initial task assignment for ...">`
+    里面才是真正的任务。之前没有识别这个协议标签，卡片标题就会直接显示整段 XML。
+    """
+    match = _WB_TEAM_RE.search(raw or "")
+    if not match:
+        return "", ""
+    attrs, body = match.group(1), match.group(2)
+    summary_match = re.search(r"summary\s*=\s*([\"'])(.*?)\1", attrs, re.I | re.S)
+    summary = _html_unescape(summary_match.group(2)).strip() if summary_match else ""
+    return summary, _wb_tidy_visible(body)
+
+
+def _workbuddy_title_from_record(record: dict[str, Any], is_subagent: bool = False) -> str:
+    """从一条 WorkBuddy role=user 记录中提取可读标题。
+
+    普通用户消息走原有清洗；团队派发消息优先用 summary，缺失时退回任务正文首行。
+    """
+    raw = _html_unescape(_wb_content_text(record).strip())
+    if not raw:
+        return ""
+    summary, body = _wb_team_message(raw)
+    if summary or body:
+        summary = re.sub(r"^Initial\s+task\s+assignment\s+for\s+", "", summary, flags=re.I).strip()
+        candidate = summary or next(
+            (line.strip() for line in body.splitlines() if line.strip()), ""
+        )
+        if candidate:
+            candidate = re.sub(r"\s+", " ", candidate).strip()
+            return f"子代理 · {candidate}"[:80] if is_subagent else candidate[:80]
+        return ""
+
+    classified = classify_workbuddy_user_record(record)
+    if classified.get("kind") != "user":
+        return ""
+    text = re.sub(r"\s+", " ", str(classified.get("text") or "")).strip()
+    return text[:80]
+
+
+def _workbuddy_parent_info(jsonl_path: Path) -> tuple[bool, str]:
+    """从 `.../<parent-sid>/subagents/agent-*.jsonl` 路径推断父子关系。"""
+    try:
+        parts = jsonl_path.parts
+        idx = parts.index("subagents")
+    except ValueError:
+        return False, ""
+    if idx <= 0:
+        return False, ""
+    return True, parts[idx - 1]
+
+
 def classify_workbuddy_user_record(record: dict[str, Any]) -> dict[str, Any]:
     """把 role=user 的记录拆成「真实用户指令」或「系统通知」。
 
@@ -1717,6 +1868,21 @@ def classify_workbuddy_user_record(record: dict[str, Any]) -> dict[str, Any]:
         return {"kind": "skip", "text": "", "raw": "", "hidden": 0, "label": ""}
 
     lowered = raw.lower()
+
+    # 0. 团队派发消息：WorkBuddy 子代理的首条 role=user 记录不是用户输入，
+    # 而是 team-lead 注入的任务委派；不要把它原样当作聊天正文。
+    team_summary, team_body = _wb_team_message(raw)
+    if team_summary or team_body:
+        visible = team_body or team_summary
+        if team_summary and team_summary not in visible:
+            visible = f"任务摘要：{team_summary}\n\n{visible}".strip()
+        return {
+            "kind": "notice",
+            "text": visible,
+            "raw": raw,
+            "hidden": max(len(raw) - len(visible), 0),
+            "label": "团队任务派发",
+        }
 
     # 1. 含 <user_query>：只保留用户真正敲进去的正文
     if _WB_QUERY_RE.search(raw):
@@ -2328,15 +2494,17 @@ def get_workbuddy_sessions() -> list[dict[str, Any]]:
         except Exception:
             pass
 
-    results = []
+    results: list[dict[str, Any]] = []
     projects_dir = wb_dir / "projects"
     if projects_dir.exists():
         for j in projects_dir.glob("**/*.jsonl"):
             sid = j.stem
+            is_sub_candidate, parent_sid = _workbuddy_parent_info(j)
             meta = meta_by_id.get(sid, {})
             raw_title = meta.get("title")
             created_at = meta.get("created_at")
-            
+            sub_summary = ""
+
             # 真实时间口径：优先 DB 的 created_at（毫秒），退回 jsonl 首条记录时间，最后退回文件 mtime。
             # 统一按本地时区渲染，避免出现"所有会话都是 12:00"的伪时间，以及 UTC 换算导致的跨日错位。
             created_dt: datetime | None = None
@@ -2376,29 +2544,35 @@ def get_workbuddy_sessions() -> list[dict[str, Any]]:
                 try:
                     with open(j, "r", encoding="utf-8", errors="ignore") as f:
                         for line in f:
-                            data = json.loads(line)
+                            try:
+                                data = json.loads(line)
+                            except Exception:
+                                continue
                             if data.get("type") != "message" or data.get("role") != "user":
                                 continue
-                            classified = classify_workbuddy_user_record(data)
-                            if classified["kind"] != "user":
+                            candidate = _workbuddy_title_from_record(data, is_sub_candidate)
+                            if not candidate:
                                 continue
-                            first_line = classified["text"].strip().splitlines()
-                            if first_line and first_line[0].strip():
-                                raw_title = first_line[0].strip()[:60]
-                                break
-                except:
+                            raw_title = candidate
+                            if is_sub_candidate:
+                                sm, _ = _wb_team_message(_html_unescape(_wb_content_text(data).strip()))
+                                sub_summary = re.sub(
+                                    r"^Initial\s+task\s+assignment\s+for\s+", "", sm, flags=re.I
+                                ).strip()
+                            break
+                except Exception:
                     pass
             if not raw_title:
-                raw_title = f"WorkBuddy 会话 {sid[:8]}"
+                raw_title = f"子代理 {sid[:8]}" if is_sub_candidate else f"WorkBuddy 会话 {sid[:8]}"
 
-            raw_title = raw_title.replace("\r", " ").replace("\n", " ").strip()
+            raw_title = re.sub(r"\s+", " ", str(raw_title)).strip()
             title = f"{date_str} · {raw_title}"
 
             records_count = 0
             try:
                 with open(j, "r", encoding="utf-8", errors="ignore") as f:
                     records_count = sum(1 for _ in f)
-            except:
+            except Exception:
                 pass
 
             wb_stat = j.stat()
@@ -2414,7 +2588,66 @@ def get_workbuddy_sessions() -> list[dict[str, Any]]:
                 **_token_fields(wb_tok),
                 "file_path": str(j),
                 "exists": True,
+                "mtime": wb_stat.st_mtime,
+                "is_child": False,
+                "parent_id": "",
+                "parent_title": "",
+                "parent_catalog_id": "",
+                "agent_name": sub_summary if is_sub_candidate else "",
+                "children": [],
+                "children_count": 0,
+                "_workbuddy_parent_sid": parent_sid if is_sub_candidate else "",
             })
+
+    # WorkBuddy 的 team 模式把每个子代理单独写成
+    # `.../<parent-sid>/subagents/agent-*.jsonl`。这些文件是真实的独立请求，
+    # 不是父文件的副本；列表里应收进父卡片的「子会话」抽屉，而不是各自占一张卡。
+    by_sid = {r["session_id"]: r for r in results}
+    for item in results:
+        parent_sid = str(item.get("_workbuddy_parent_sid") or "")
+        if not parent_sid:
+            continue
+        parent = by_sid.get(parent_sid)
+        if not parent:
+            # 父文件可能被用户单独移走；此时不要制造一张永远打不开的“隐形子卡”。
+            item["_workbuddy_parent_sid"] = ""
+            continue
+        item["is_child"] = True
+        item["parent_id"] = parent_sid
+        item["parent_title"] = parent.get("title", "")
+        item["parent_catalog_id"] = parent.get("catalog_id", "")
+        child_summary = {
+            "catalog_id": item.get("catalog_id", ""),
+            "session_id": item.get("session_id", ""),
+            "format": item.get("format", "workbuddy"),
+            "title": item.get("title", ""),
+            "agent_name": item.get("agent_name") or "subagent",
+            "records": item.get("records") or 0,
+            "bytes": item.get("bytes") or 0,
+            "tokens": item.get("tokens") or 0,
+            "input_tokens": item.get("input_tokens") or 0,
+            "output_tokens": item.get("output_tokens") or 0,
+            "thoughts_tokens": item.get("thoughts_tokens") or 0,
+            "content_tokens": item.get("content_tokens") or 0,
+            "cache_read_tokens": item.get("cache_read_tokens") or 0,
+            "cache_miss_tokens": item.get("cache_miss_tokens") or 0,
+            "fresh_tokens": item.get("fresh_tokens") or 0,
+            "usage_source": item.get("usage_source", ""),
+            "started_at": item.get("started_at", ""),
+            "mtime": item.get("mtime", 0),
+            "file_path": item.get("file_path", ""),
+        }
+        parent.setdefault("children", []).append(child_summary)
+
+    for item in results:
+        item.pop("_workbuddy_parent_sid", None)
+        if item.get("is_child"):
+            continue
+        children = item.get("children") or []
+        children.sort(key=lambda c: (c.get("started_at") or "", float(c.get("mtime") or 0)))
+        item["children"] = children
+        item["children_count"] = len(children)
+
     return results
 
 def make_temp_claude_jsonl(messages: list[dict[str, str]], sid: str) -> Path:
@@ -3816,6 +4049,17 @@ def _doubao_extract_idb_sessions(idb_dir: Path) -> list[dict[str, Any]]:
     return list(conv_map.values())
 
 
+def _doubao_epoch(value: Any) -> int:
+    """豆包时间字段统一成秒；兼容秒、毫秒与浮点。"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if v > 10**12:
+        v /= 1000
+    return int(v) if v > 0 else 0
+
+
 def get_doubao_sessions() -> list[dict[str, Any]]:
     """扫描本地豆包（Doubao）会话：Agent Mode 轨迹、Coding 快照与工作区产物。"""
     results: list[dict[str, Any]] = []
@@ -3823,6 +4067,17 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
 
     local_app = LOCAL_APPDATA
     user_home = USERPROFILE
+
+    doubao_user_data = local_app / "Doubao" / "User Data"
+    idb_data = doubao_idb.load(doubao_user_data)
+    idb_mtime = 0.0
+    for idb_dir in doubao_idb.leveldb_dirs(doubao_user_data):
+        for p in idb_dir.glob("*"):
+            if p.is_file():
+                try:
+                    idb_mtime = max(idb_mtime, p.stat().st_mtime)
+                except OSError:
+                    continue
 
     # 1. Doubao Agent Mode: trajectory.jsonl + assignment.md
     agent_sessions_dir = local_app / "Doubao" / "User Data" / "Default" / ".doubao" / "agent_mode" / "workspace" / ".sessions"
@@ -3988,7 +4243,9 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
     # 4. 豆包云端同步仓（完整会话正文；优先于本地 IndexedDB 元数据）
     cloud_data = doubao_cloud.load()
     for cid, item in sorted(
-        cloud_data.items(), key=lambda kv: (kv[1].get("ts") or 0), reverse=True
+        cloud_data.items(),
+        key=lambda kv: (_doubao_epoch(kv[1].get("last_active") or kv[1].get("ts")),),
+        reverse=True,
     ):
         cid = str(cid)
         msg_list = item.get("messages") or []
@@ -4006,14 +4263,38 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
             except ValueError:
                 pass
         seen_sids.add(cid)
-        ts = item.get("ts") or 0
-        started_at = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else ""
+        idb_item = idb_data.get(cid) or {}
+        last_ts = max(
+            _doubao_epoch(item.get("last_active")),
+            _doubao_epoch(item.get("ts")),
+            _doubao_epoch(idb_item.get("last_active")),
+            _doubao_epoch(idb_item.get("ts")),
+        )
+        first_msg_ts = min(
+            (
+                _doubao_epoch(m.get("ts"))
+                for m in msg_list
+                if _doubao_epoch(m.get("ts"))
+            ),
+            default=0,
+        )
+        created_ts = (
+            _doubao_epoch(item.get("created_at"))
+            or _doubao_epoch(idb_item.get("created_at"))
+            or _doubao_epoch(idb_item.get("ts"))
+            or first_msg_ts
+            or last_ts
+        )
+        if idb_item.get("active"):
+            last_ts = max(last_ts, _doubao_epoch(idb_mtime))
+        last_ts = last_ts or created_ts
+        started_at = datetime.fromtimestamp(created_ts).strftime("%Y-%m-%d %H:%M:%S") if created_ts else ""
         title = str(item.get("title") or f"豆包对话 ({cid[-8:]})")
         total_bytes = max(
             128, sum(len(str(m.get("text") or "").encode("utf-8", errors="ignore")) for m in msg_list)
         )
         tok = compute_session_tokens(
-            "doubao", cid, Path(item.get("file") or item.get("dir") or ""), ts, total_bytes
+            "doubao", cid, Path(item.get("file") or item.get("dir") or ""), last_ts, total_bytes
         )
         results.append({
             "catalog_id": f"db_{cid[:16]}",
@@ -4021,6 +4302,8 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
             "session_id": cid,
             "title": title,
             "started_at": started_at,
+            "created_at": created_ts,
+            "last_active": last_ts,
             "records": max(1, len(msg_list)),
             "bytes": total_bytes,
             **_token_fields(tok),
@@ -4033,20 +4316,10 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
             "source_kind": "cloud",
             "cached_msgs": [],
             "exists": True,
-            "mtime": ts,
+            "mtime": last_ts,
         })
 
     # 5. Doubao Chat IndexedDB（遍历所有 profile：Default / Profile 1 ...）
-    doubao_user_data = local_app / "Doubao" / "User Data"
-    idb_data = doubao_idb.load(doubao_user_data)
-    idb_mtime = 0.0
-    for idb_dir in doubao_idb.leveldb_dirs(doubao_user_data):
-        for p in idb_dir.glob("*"):
-            if p.is_file():
-                try:
-                    idb_mtime = max(idb_mtime, p.stat().st_mtime)
-                except OSError:
-                    continue
     existing_by_sid = {
         str(r.get("session_id") or ""): r for r in results if r.get("format") == "doubao"
     }
@@ -4074,17 +4347,24 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
         if not cached_msgs and os.environ.get("DOUBAO_INCLUDE_EMPTY_IDB", "0") != "1":
             continue
         seen_sids.add(cid)
-        ts = item.get("ts") or idb_mtime
-        started_at = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else ""
+        last_ts = _doubao_epoch(item.get("last_active") or item.get("ts"))
+        created_ts = _doubao_epoch(item.get("created_at")) or last_ts
+        if item.get("active"):
+            last_ts = max(last_ts, _doubao_epoch(idb_mtime))
+        last_ts = last_ts or _doubao_epoch(idb_mtime)
+        created_ts = created_ts or last_ts
+        started_at = datetime.fromtimestamp(created_ts).strftime("%Y-%m-%d %H:%M:%S") if created_ts else ""
         title = item.get("title") or f"豆包对话 ({cid[-8:]})"
         total_bytes = max(128, sum(len(t.encode("utf-8", errors="ignore")) for t in cached_msgs))
-        tok = compute_session_tokens("doubao", cid, Path(item.get("dir") or doubao_user_data), ts, total_bytes)
+        tok = compute_session_tokens("doubao", cid, Path(item.get("dir") or doubao_user_data), last_ts, total_bytes)
         results.append({
             "catalog_id": f"db_{cid[:16]}",
             "format": "doubao",
             "session_id": cid,
             "title": title,
             "started_at": started_at,
+            "created_at": created_ts,
+            "last_active": last_ts,
             "records": len(cached_msgs),
             "bytes": total_bytes,
             **_token_fields(tok),
@@ -4097,7 +4377,7 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
             "source_kind": "indexeddb",
             "cached_msgs": cached_msgs,
             "exists": True,
-            "mtime": ts,
+            "mtime": last_ts,
         })
 
     return results
@@ -6048,14 +6328,26 @@ class RequestHandler(BaseHTTPRequestHandler):
                 events = sanitize_session_events(get_trae_session_messages(match), "trae")
             except Exception as e:
                 raise detail_service.DetailError(f"Failed to read Trae session: {e}", 500)
-            # Trae 新版把会话正文（模型回复/工具链）写入加密库，外部只能读到提问缓存；
-            # 没有 assistant 事件时必须显式说明，否则详情看起来像「丢了回复」
+            # 解密库存在时不再声称“无法解密”；没有 assistant 正文要区分
+            # 「解密库已读到但没有模型正文」和「只有工作区提问缓存」。
             has_assistant = any(str(ev.get("role") or "") == "assistant" for ev in events)
-            notice = "" if has_assistant else (
-                "Trae 新版把模型回复与工具调用写入了加密库"
-                "（ModularData\\ai-agent\\database.db），外部工具无法解密读取；"
-                "此处仅能显示本地可读的用户提问。"
-            )
+            if has_assistant:
+                notice = ""
+            elif TRAE_PLAIN_DB.exists() and (match.get("has_db") or _trae_db_index().get(match.get("session_id") or "")):
+                notice = (
+                    "该 Trae 会话已从本地解密库读取，但库内只有用户提问或任务计划，"
+                    "没有可显示的助手正文；这不属于解密失败。"
+                )
+            elif TRAE_PLAIN_DB.exists():
+                notice = (
+                    "该 Trae 会话在本地解密库中没有对应记录，"
+                    "当前只能显示工作区提问缓存。"
+                )
+            else:
+                notice = (
+                    "未找到 Trae 解密库，当前只能显示本地可读的用户提问；"
+                    "请保持 Trae 数据库可读并重新运行解密。"
+                )
             return {
                 "session_id": match["session_id"],
                 "format": "trae",
@@ -6116,7 +6408,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                     c_title = antigravity_first_user_text(path)
                 if not c_title:
                     c_title = sess.session_id[:8]
-                notice = ""
+                notice = "" if events_data else (
+                    "该 Antigravity 会话库没有可解析步骤，可能是空会话或未完成的轨迹；"
+                    "不是数据库无法打开。"
+                )
                 parent_id = (info.get("parent_id") or "").strip()
                 parent_title = ""
                 parent_cid = ""
@@ -6169,6 +6464,34 @@ class RequestHandler(BaseHTTPRequestHandler):
             _enrich_session_events_for_detail(path, sess.source_format.value, sess.events, events_data)
             events_data = sanitize_session_events(events_data, sess.source_format.value)
         except Exception as e:
+            # 空 Antigravity IDE 库通常只有 trajectory_meta、没有 CLI cascade。
+            # 这类会话没有正文可显示，不应把“空会话”当成解析失败返回 500。
+            if src_format == AgentFormat.ANTIGRAVITY and (
+                "must contain one CLI cascade trajectory" in str(e)
+                or "no_conversation_records" in str(e)
+            ):
+                sid = path.stem
+                try:
+                    fallback_title = extract_antigravity_title(path) or sid[:8]
+                except Exception:
+                    fallback_title = sid[:8]
+                return {
+                    "session_id": sid,
+                    "format": "antigravity",
+                    "title": fallback_title,
+                    "started_at": "",
+                    "events_count": 0,
+                    "events": [],
+                    "notice": (
+                        "该 Antigravity 会话库没有 CLI cascade 轨迹，"
+                        "可能是空会话或未完成的 IDE 轨迹；不是数据库无法打开。"
+                    ),
+                    "is_child": False,
+                    "parent_id": "",
+                    "parent_title": "",
+                    "parent_catalog_id": "",
+                    "agent_name": "",
+                }
             raise detail_service.DetailError(f"Failed to parse session content: {e}", 500)
 
         is_child = False
@@ -6202,6 +6525,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                     parent_cid = f"ag_{parent_id[:12]}"
 
                 notice = ""
+
+        if src_format == AgentFormat.ANTIGRAVITY and not events_data:
+            notice = (
+                "该 Antigravity 会话库没有可解析步骤，可能是空会话或未完成的轨迹；"
+                "不是数据库无法打开。"
+            )
 
         return {
             "session_id": sess.session_id,
@@ -7043,6 +7372,52 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._send_compressed(body, "text/html; charset=utf-8", status=200)
 
 
+def _start_parent_watchdog() -> None:
+    """桌面壳退出时兜底结束 sidecar。
+
+    Tauri 的 CommandChild.kill() 在 PyInstaller onefile 的 bootloader 场景下
+    可能只结束启动器、留下 Python 子进程；由 Tauri 注入父进程 PID，由
+    sidecar 自己轮询，保证端口和进程不残留。源码运行/无注入时不启用。
+    """
+    raw = (os.environ.get("MEMORY_TOOLS_PARENT_PID") or "").strip()
+    if not raw.isdigit():
+        return
+    parent_pid = int(raw)
+    if parent_pid <= 0:
+        return
+
+    def parent_alive(pid: int) -> bool:
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32")
+            process_query_limited_information = 0x1000
+            still_active = 259
+            handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+            if not handle:
+                return False
+            code = wintypes.DWORD()
+            ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+            kernel32.CloseHandle(handle)
+            return bool(ok) and code.value == still_active
+        except Exception:
+            return True
+
+    def loop() -> None:
+        import time
+
+        while True:
+            time.sleep(2.0)
+            if not parent_alive(parent_pid):
+                os._exit(0)
+
+    import threading
+
+    thread = threading.Thread(target=loop, name="DesktopParentWatchdog", daemon=True)
+    thread.start()
+
+
 def main():
     global PORT
     multiprocessing.freeze_support()
@@ -7069,6 +7444,7 @@ def main():
             pass
 
     ensure_antigravity_catalog_roots()
+    _start_parent_watchdog()
     try:
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")

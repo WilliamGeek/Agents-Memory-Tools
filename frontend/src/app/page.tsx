@@ -207,7 +207,11 @@ export default function WorkspacePage() {
       <main className="flex-1 w-full max-w-shell mx-auto px-4 md:px-6 py-4 md:py-5 space-y-4">
         <Toolbar
           totalSessions={status?.totalSessions || serverTotal || sessions.length}
-          matchCount={Math.max(0, (serverTotal || sessions.length) - locallyFoldedOut)}
+          matchCount={
+            query
+              ? filtered.length
+              : serverStats?.topLevelTotal ?? Math.max(0, (serverTotal || sessions.length) - locallyFoldedOut)
+          }
           totalBytes={stats.bytes}
           totalTokens={stats.tokens}
           formatCounts={status?.formatCounts || {}}

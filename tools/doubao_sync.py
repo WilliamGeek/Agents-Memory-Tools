@@ -546,23 +546,44 @@ def _events_from_message(msg: dict[str, Any]) -> list[dict[str, str]]:
     return []
 
 
+def _epoch_seconds(value: Any) -> int:
+    """把豆包 API 时间统一成秒；兼容秒、毫秒与字符串。"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if v > 10**12:
+        v /= 1000
+    return int(v) if v > 0 else 0
+
+
 def normalize_conversation(conv: dict[str, Any], raw_msgs: list[dict[str, Any]]) -> dict[str, Any]:
     cid = str(conv.get("conversation_id") or "")
-    fallback_ts = int(conv.get("update_time") or 0)
+    update_ts = _epoch_seconds(conv.get("update_time"))
+    create_ts = _epoch_seconds(conv.get("create_time"))
+    last_active = update_ts
+    first_ts = 0
     events: list[dict[str, Any]] = []
     last_text = ""
     for msg in sorted(raw_msgs, key=lambda m: int(m.get("index") or 0)):
-        ts = int(msg.get("create_time") or msg.get("update_time") or fallback_ts or 0)
+        ts = _epoch_seconds(msg.get("create_time") or msg.get("update_time")) or update_ts
+        if ts and not first_ts:
+            first_ts = ts
+        last_active = max(last_active, ts)
         for ev in _events_from_message(msg):
             text = ev.get("text") or ""
             if not text or text == last_text:
                 continue
             last_text = text
             events.append({**ev, "ts": ts})
+    last_active = last_active or create_ts
+    created_at = create_ts or first_ts or last_active
     return {
         "cid": cid,
         "title": _clip(conv.get("name") or f"豆包对话 ({cid[-8:]})", 300),
-        "ts": fallback_ts,
+        "created_at": created_at,
+        "last_active": last_active,
+        "ts": last_active,
         "message_index": int(conv.get("message_index") or 0),
         "message_cursor": int(conv.get("message_cursor") or 1),
         "updated_at": int(time.time()),
@@ -647,8 +668,11 @@ def sync_all(full: bool = False, only: str = "", limit: int = 0,
                 known[cid] = {
                     "message_index": mi,
                     "message_cursor": mc,
+                    "create_time": int(conv.get("create_time") or 0),
                     "update_time": int(conv.get("update_time") or 0),
                     "title": norm["title"],
+                    "created_at": norm["created_at"],
+                    "last_active": norm["last_active"],
                     "ts": norm["ts"],
                     "events": len(norm["messages"]),
                     "synced_at": int(time.time()),
@@ -688,9 +712,11 @@ def rebuild_manifest_from_files() -> int:
         entries[cid] = {
             "message_index": int(obj.get("message_index") or 0),
             "message_cursor": int(obj.get("message_cursor") or 1),
-            "update_time": int(obj.get("ts") or 0),
+            "update_time": int(obj.get("last_active") or obj.get("ts") or 0),
             "title": obj.get("title") or "",
-            "ts": int(obj.get("ts") or 0),
+            "created_at": int(obj.get("created_at") or obj.get("ts") or 0),
+            "last_active": int(obj.get("last_active") or obj.get("ts") or 0),
+            "ts": int(obj.get("last_active") or obj.get("ts") or 0),
             "events": len(obj.get("messages") or []),
             "synced_at": int(obj.get("updated_at") or 0),
         }

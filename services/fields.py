@@ -48,6 +48,10 @@ LITE_FIELDS: tuple[str, ...] = (
     "usage_source",
     "input_tokens",
     "output_tokens",
+    "content_tokens",
+    "cache_read_tokens",
+    "cache_miss_tokens",
+    "fresh_tokens",
 )
 
 #: lite 模式显式砍掉的字段（写出来是为了让 diff 一眼看到"砍了什么"）
@@ -65,7 +69,6 @@ LITE_DROP: tuple[str, ...] = (
     "lineage_head_id",
     "nesting_depth",
     "thoughts_tokens",
-    "content_tokens",
     "chat_tokens",
 )
 

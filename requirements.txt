@@ -1,5 +1,8 @@
 # Memory Tools core dependencies
-session-migrate>=0.11.0
+# 0.12.0 的 Antigravity 解析器只接受 trajectory_type=4/source=17 的 CLI
+# cascade，会把本机大量 IDE 轨迹（trajectory_type=22）直接判为空/失败；
+# 0.11.0 可正常读取这些 IDE 会话。升级前需先补齐 IDE 轨迹兼容。
+session-migrate==0.11.0
 tiktoken>=0.7.0
 tokenizers>=0.19.0
 requests>=2.31.0

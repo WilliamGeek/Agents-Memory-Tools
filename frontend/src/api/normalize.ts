@@ -99,6 +99,9 @@ export function normalizeChild(raw: Raw): SessionChild {
     format: str(raw.format),
     agentName: str(raw.agent_name),
     isChild: Boolean(raw.is_child),
+    usageSource: str(raw.usage_source),
+    cacheReadTokens: num(raw.cache_read_tokens),
+    cacheMissTokens: num(raw.cache_miss_tokens),
     filePath: str(raw.file_path),
   };
 }
@@ -122,6 +125,9 @@ export function normalizeSession(raw: Raw): SessionItem {
     outputTokens: num(raw.output_tokens),
     thoughtsTokens: num(raw.thoughts_tokens),
     contentTokens: num(raw.content_tokens),
+    cacheReadTokens: num(raw.cache_read_tokens),
+    cacheMissTokens: num(raw.cache_miss_tokens),
+    freshTokens: num(raw.fresh_tokens),
     usageSource: str(raw.usage_source),
     filePath: str(raw.file_path),
     exists: raw.exists !== false,
@@ -156,7 +162,12 @@ export function normalizeSessionList(raw: Raw): SessionListResponse {
   const pageCount = num(raw?.count) || sessions.length;
   const rawStats = raw?.stats && typeof raw.stats === 'object' ? raw.stats : null;
   const stats = rawStats
-    ? { bytes: num(rawStats.bytes), tokens: num(rawStats.tokens) }
+    ? {
+        bytes: num(rawStats.bytes),
+        tokens: num(rawStats.tokens),
+        topLevelTotal: num(rawStats.top_level_total),
+        childTotal: num(rawStats.child_total),
+      }
     : undefined;
 
   if (!meta) {

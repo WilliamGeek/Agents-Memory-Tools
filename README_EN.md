@@ -157,9 +157,10 @@ python web_app.py
 
 Open `http://127.0.0.1:18922`. The Python server hosts both the exported React workbench and the API on one port; no extra Node.js daemon or proxy is required. If the frontend export is missing, the built-in console is used as a fallback.
 
-> **Windows shortcut**
-> - Double-click `启动Memory Tools.cmd` to launch in the foreground; the frontend is built automatically when missing.
-> - Closing the terminal window stops the service and releases its processes; no separate stop script is needed.
+> **Windows shortcuts**
+> - `启动Memory Tools.cmd`: one-click launch; builds the frontend if missing
+> - `后台静默启动Memory Tools.vbs`: headless background launch
+> - `停止Memory Tools.cmd`: stop the local service
 
 ---
 

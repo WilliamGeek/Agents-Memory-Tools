@@ -176,7 +176,7 @@ export function Toolbar({
               总收录 <strong className="text-ink font-medium">{formatCount(totalSessions)}</strong> · 匹配{' '}
               <strong className="text-ink font-medium">{formatCount(matchCount)}</strong> 篇 ·{' '}
               {formatBytes(totalBytes)} ·{' '}
-              <strong className="text-accent-ink font-medium">{formatTokens(totalTokens)} Tokens</strong>
+              <strong className="text-accent-ink font-medium">{formatTokens(totalTokens)} 累计 Tokens</strong>
             </>
           )}
         </div>

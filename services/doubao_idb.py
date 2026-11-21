@@ -213,6 +213,67 @@ def _decode_text(buf: bytes, pos: int, tag: int) -> str:
     return raw.decode("utf-16-le" if tag == 0x63 else "utf-8", errors="ignore").strip()
 
 
+def _seconds(value: Any) -> int:
+    """把豆包时间字段统一成秒；兼容秒、毫秒和浮点。"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if v > 10**12:
+        v /= 1000
+    return int(v) if v > 0 else 0
+
+
+def _meta_time(window: bytes, field: bytes) -> int:
+    """解析 ``"update_time"\\n179...`` 这类 list 元数据字段。
+
+    字段名后不是 JSON 冒号，而是一个类型字节，通常为换行；`[^0-9]`
+    比 `.` 更稳，避免换行导致整段时间为 0。
+    """
+    m = re.search(re.escape(field) + rb'"[^0-9]([0-9]{10,13})', window)
+    return _seconds(m.group(1).decode("ascii", "ignore")) if m else 0
+
+
+def _parse_task_meta(values: list[bytes]) -> tuple[dict[str, dict[str, int]], str]:
+    """从 mainTaskDataMap 提取每个会话的创建/最后活动时间。
+
+    任务态 blob 中 create_time_ms、query_send_timestamp、start_time_s 是
+    8 字节 little-endian double。最后一个任务态 cid 视为当前打开会话。
+    """
+    out: dict[str, dict[str, int]] = {}
+    active_cid = ""
+    for blob in values:
+        if b"mainTaskDataMap" not in blob:
+            continue
+        m = _CONV_RE.search(blob)
+        if not m:
+            continue
+        cid = m.group(1).decode("ascii", "ignore")
+        active_cid = cid
+        nums: list[float] = []
+        for field in (
+            b"create_time_ms",
+            b"query_send_timestamp",
+            b"req_create_time_sec",
+            b"start_time_s",
+        ):
+            for fm in re.finditer(re.escape(field) + rb"N([\x00-\xff]{8})", blob):
+                try:
+                    nums.append(struct.unpack("<d", fm.group(1))[0])
+                except struct.error:
+                    continue
+        if not nums:
+            continue
+        created = _seconds(min(nums))
+        last = _seconds(max(nums))
+        prev = out.get(cid) or {}
+        out[cid] = {
+            "created_at": min(v for v in (prev.get("created_at"), created) if v) if (prev.get("created_at") or created) else 0,
+            "last_active": max(prev.get("last_active", 0), last),
+        }
+    return out, active_cid
+
+
 def _parse_conversations(values: list[bytes]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     conv_blobs = [b for b in values if b"conversation-list-data" in b]
@@ -232,20 +293,26 @@ def _parse_conversations(values: list[bytes]) -> dict[str, dict[str, Any]]:
                 if 1 <= ln <= 400 and q + ln <= len(window):
                     enc = "utf-16-le" if tag == 0x63 else "utf-8"
                     title = window[q:q + ln].decode(enc, errors="ignore").strip()
-        ts = 0
-        tm = re.search(rb'update_time".([0-9]{10,13})', window) or re.search(
-            rb'create_time".([0-9]{10,13})', window
-        )
-        if tm:
-            ts = int(tm.group(1))
-            if ts > 10**12:
-                ts //= 1000
+        created = _meta_time(window, b"create_time")
+        updated = _meta_time(window, b"update_time")
+        last_active = updated or created
         cur = out.get(cid)
         if cur is None:
-            out[cid] = {"cid": cid, "title": title, "ts": ts}
-        elif title and not cur["title"]:
-            cur["title"] = title
-            cur["ts"] = cur["ts"] or ts
+            out[cid] = {
+                "cid": cid,
+                "title": title,
+                "ts": last_active,
+                "created_at": created,
+                "last_active": last_active,
+            }
+        else:
+            if title and not cur["title"]:
+                cur["title"] = title
+            if created and not cur.get("created_at"):
+                cur["created_at"] = created
+            if last_active and last_active > (cur.get("last_active") or 0):
+                cur["last_active"] = last_active
+                cur["ts"] = last_active
     return out
 
 
@@ -331,6 +398,8 @@ def load(user_data_root: Path) -> dict[str, dict[str, Any]]:
     values: list[bytes] = []
     conv: dict[str, dict[str, Any]] = {}
     tasks: dict[str, list[str]] = {}
+    task_meta: dict[str, dict[str, int]] = {}
+    active_cid = ""
     for d in dirs:
         vals = _iter_values(d)
         values.extend(vals)
@@ -343,19 +412,52 @@ def load(user_data_root: Path) -> dict[str, dict[str, Any]]:
                     cur["title"] = meta["title"]
                 if not cur.get("ts") and meta.get("ts"):
                     cur["ts"] = meta["ts"]
+                if meta.get("created_at") and not cur.get("created_at"):
+                    cur["created_at"] = meta["created_at"]
+                if (meta.get("last_active") or 0) > (cur.get("last_active") or 0):
+                    cur["last_active"] = meta["last_active"]
         for cid, texts in _parse_tasks(vals).items():
             if len(texts) > len(tasks.get(cid, [])):
                 tasks[cid] = texts
+        loop_times, loop_active = _parse_task_meta(vals)
+        for cid, times in loop_times.items():
+            prev = task_meta.get(cid) or {}
+            task_meta[cid] = {
+                "created_at": min(v for v in (prev.get("created_at"), times.get("created_at")) if v) if (prev.get("created_at") or times.get("created_at")) else 0,
+                "last_active": max(prev.get("last_active", 0), times.get("last_active", 0)),
+            }
+        # 当前打开会话只从主 profile（Default）取；Profile 1 等浏览器缓存
+        # 里的任务态不能反过来把主窗口的 active 覆盖掉。
+        if loop_active and not active_cid:
+            active_cid = loop_active
+
     data: dict[str, dict[str, Any]] = {}
     for cid, meta in conv.items():
-        data[cid] = {**meta, "messages": tasks.get(cid) or [], "dir": str(dirs[0]) if dirs else ""}
+        times = task_meta.get(cid) or {}
+        last_active = max(meta.get("last_active") or 0, times.get("last_active") or 0, meta.get("ts") or 0)
+        created_at = meta.get("created_at") or times.get("created_at") or last_active
+        data[cid] = {
+            **meta,
+            "ts": last_active,
+            "created_at": created_at,
+            "last_active": last_active,
+            "active": cid == active_cid,
+            "messages": tasks.get(cid) or [],
+            "dir": str(dirs[0]) if dirs else "",
+        }
     for cid, items in tasks.items():
         if cid in data:
             continue
+        times = task_meta.get(cid) or {}
+        last_active = times.get("last_active") or 0
+        created_at = times.get("created_at") or last_active
         data[cid] = {
             "cid": cid,
             "title": "",
-            "ts": 0,
+            "ts": last_active,
+            "created_at": created_at,
+            "last_active": last_active,
+            "active": cid == active_cid,
             "messages": items,
             "dir": str(dirs[0]) if dirs else "",
         }

@@ -1,0 +1,484 @@
+{
+  "title": "Agents Memory Tools · 桌面端工作逻辑架构",
+  "subtitle": "Tauri 2 外壳 + PyInstaller sidecar + 本地会话索引；节点同时标注代码锚点与测试入口",
+  "mode": "blueprint",
+  "spine_y": 500,
+  "col_width": 460,
+  "stages": {
+    "S0": {
+      "name": "S0 · 启动、单实例与本地门禁",
+      "shortName": "S0 启动门禁",
+      "minCol": 0,
+      "maxCol": 5,
+      "color": "#38bdf8"
+    },
+    "S1": {
+      "name": "S1 · 采集、平台适配与快照",
+      "shortName": "S1 采集快照",
+      "minCol": 6,
+      "maxCol": 8,
+      "color": "#c084fc"
+    },
+    "S2": {
+      "name": "S2 · FTS 索引、API 与缓存",
+      "shortName": "S2 索引服务",
+      "minCol": 9,
+      "maxCol": 11,
+      "color": "#14b8a6"
+    },
+    "S3": {
+      "name": "S3 · 工作台、测试验收与发布",
+      "shortName": "S3 界面交付",
+      "minCol": 12,
+      "maxCol": 14,
+      "color": "#10b981"
+    }
+  },
+  "nodes": [
+    {
+      "id": "Start",
+      "type": "endpoint",
+      "badge_id": "START",
+      "label": "桌面启动: agents-memory-tools-desktop.exe",
+      "subtitle": "Tauri 主进程加载 WebView2，准备拉起本地 sidecar",
+      "stage": "S0 · 启动、单实例与本地门禁",
+      "col": 0,
+      "y": 500,
+      "details": {
+        "inputs": "开始菜单快捷方式 / F:\\\\AgentsMemoryTools-Desktop\\\\src-tauri\\\\target\\\\release\\\\agents-memory-tools-desktop.exe",
+        "outputs": "Tauri 主进程 + main 窗口",
+        "code_anchor": "src-tauri/src/main.rs:30",
+        "test_anchor": "启动 exe 后确认 MainWindowTitle = Agents Memory Tools · 跨智能体会话记忆工作台"
+      }
+    },
+    {
+      "id": "G_Single",
+      "type": "gate",
+      "badge_id": "GATE 0.1",
+      "label": "门禁: Tauri 单实例",
+      "subtitle": "已有窗口则聚焦并退出新进程，避免第二份 sidecar",
+      "stage": "S0 · 启动、单实例与本地门禁",
+      "col": 1,
+      "y": 500,
+      "details": {
+        "gate_rule": "tauri_plugin_single_instance 回调中 show + set_focus 已有 main 窗口；未通过时不再执行 setup 的 sidecar 启动",
+        "fallback_desc": "F_Existing: 复用已有桌面窗口",
+        "code_anchor": "src-tauri/src/main.rs:32-37",
+        "test_anchor": "连续启动 exe 两次；第二次不应出现第二个 18923 监听"
+      }
+    },
+    {
+      "id": "F_Existing",
+      "type": "fallback",
+      "badge_id": "FALLBACK 0.1",
+      "label": "降级: 聚焦已有桌面窗口",
+      "subtitle": "不新建 sidecar；已有进程继续提供 127.0.0.1:18923",
+      "stage": "S0 · 启动、单实例与本地门禁",
+      "col": 1,
+      "y": 660,
+      "details": {
+        "fallback_desc": "已有 Tauri 实例时显示并聚焦原窗口，当前进程退出；端口、缓存、快照均沿用原实例",
+        "code_anchor": "src-tauri/src/main.rs:32-37",
+        "test_anchor": "第二次启动后查看任务管理器，不应出现新的 memory-tools.exe"
+      }
+    },
+    {
+      "id": "A_Tauri",
+      "type": "action",
+      "badge_id": "MAIN 0.2",
+      "label": "Tauri setup: 注入父 PID 并启动 sidecar",
+      "subtitle": "spawn memory-tools --no-browser --port 18923；父 PID 供看门狗自检",
+      "stage": "S0 · 启动、单实例与本地门禁",
+      "col": 2,
+      "y": 500,
+      "details": {
+        "inputs": "Tauri AppHandle + externalBin memory-tools.exe",
+        "outputs": "CommandChild；stdout/stderr 事件流；MEMORY_TOOLS_PARENT_PID",
+        "code_anchor": "src-tauri/src/main.rs:39-67",
+        "test_anchor": "启动后检查 18923 监听；关闭窗口后 2-10 秒内 sidecar 退出"
+      }
+    },
+    {
+      "id": "A_Paths",
+      "type": "action",
+      "badge_id": "MAIN 0.3",
+      "label": "运行路径解析: 资源只读 / 用户数据可写",
+      "subtitle": "env > frozen LOCALAPPDATA > 源码根；创建 cache、exports、logs、tools/dbkey/out",
+      "stage": "S0 · 启动、单实例与本地门禁",
+      "col": 3,
+      "y": 500,
+      "details": {
+        "inputs": "MEMORY_TOOLS_DATA_DIR、sys.frozen、_MEIPASS、USERPROFILE / APPDATA / LOCALAPPDATA",
+        "outputs": "RESOURCE_DIR、DATA_DIR、FRONTEND_OUT_DIR、TRAE_PLAIN_DB、TOKEN_CACHE_PATH",
+        "code_anchor": "runtime_paths.py:20-84",
+        "test_anchor": "MEMORY_TOOLS_DATA_DIR=F:\\\\AgentsMemoryTools-Desktop\\\\.testdata 时状态接口应命中 839 条测试索引"
+      }
+    },
+    {
+      "id": "G_Bind",
+      "type": "gate",
+      "badge_id": "GATE 0.4",
+      "label": "门禁: sidecar 单实例 + 回环端口",
+      "subtitle": "命名 mutex AgentsMemoryTools-18923；只绑定 127.0.0.1，不向局域网暴露",
+      "stage": "S0 · 启动、单实例与本地门禁",
+      "col": 4,
+      "y": 500,
+      "details": {
+        "gate_rule": "acquire_instance_lock 成功且 ThreadingHTTPServer 能绑定 127.0.0.1:18923；已有实例直接复用，不杀进程",
+        "fallback_desc": "X_Bind: 端口被其他程序占用时返回 1；已有实例时走 F_Existing",
+        "code_anchor": "web_app.py:7071-7097; services/instance.py:39-57",
+        "test_anchor": "第二实例返回 already running；用非 18923 端口验证 --port 覆盖"
+      }
+    },
+    {
+      "id": "X_Bind",
+      "type": "block",
+      "badge_id": "BLOCK 0.4",
+      "label": "阻断: 端口被占用 → return 1",
+      "subtitle": "Cannot bind 18923；不结束任何已有进程，交由使用者排查",
+      "stage": "S0 · 启动、单实例与本地门禁",
+      "col": 4,
+      "y": 880,
+      "details": {
+        "block_reason": "OSError 绑定失败；端口可能被其他软件占用",
+        "code_anchor": "web_app.py:7089-7096",
+        "test_anchor": "临时占用 18923 后启动，stderr 应出现 Cannot bind 18923，退出码 1"
+      }
+    },
+    {
+      "id": "A_HTTP",
+      "type": "action",
+      "badge_id": "MAIN 0.5",
+      "label": "HTTP 服务: 静态工作台 + JSON API",
+      "subtitle": "ThreadingHTTPServer；/ 优先 frontend/out/index.html，缺产物回退 legacy_ui",
+      "stage": "S0 · 启动、单实例与本地门禁",
+      "col": 5,
+      "y": 500,
+      "details": {
+        "inputs": "127.0.0.1:18923；frontend/out；RequestHandler",
+        "outputs": "/api/status、/api/sessions、/api/session/detail、/api/search/content 等",
+        "code_anchor": "web_app.py:5323-5533, 7084-7125",
+        "test_anchor": "Invoke-RestMethod http://127.0.0.1:18923/api/status；/api/status 与 /api/sessions 的 total 一致"
+      }
+    },
+    {
+      "id": "A_Warm",
+      "type": "action",
+      "badge_id": "MAIN 0.6",
+      "label": "快照预热: _warm_snapshot",
+      "subtitle": "启动即构建或读取上次快照；首屏避免冷启动全量重算",
+      "stage": "S1 · 采集、平台适配与快照",
+      "col": 6,
+      "y": 500,
+      "details": {
+        "inputs": "SnapshotCache 单例；cache/sessions_snapshot.json.gz",
+        "outputs": "热快照；cache_status=hit/stale；X-Build-Ms",
+        "code_anchor": "web_app.py:7098-7105; services/snapshot.py:110-168",
+        "test_anchor": "冷启动首屏请求观察 X-Cache / X-Build-Ms；第二次请求应命中 304 或 hit"
+      }
+    },
+    {
+      "id": "A_Catalog",
+      "type": "action",
+      "badge_id": "MAIN 0.7",
+      "label": "Catalog 根目录 + 增量扫描",
+      "subtitle": "注册默认根目录与自定义根；扫描只读源文件，不修改会话",
+      "stage": "S1 · 采集、平台适配与快照",
+      "col": 7,
+      "y": 500,
+      "details": {
+        "inputs": "Catalog roots：Antigravity、Claude、Codex、Copilot、Trae、WorkBuddy、豆包；catalog.sqlite",
+        "outputs": "sessions 索引行、root 扫描状态、catalog_id",
+        "code_anchor": "web_app.py:4804-5022; session_migrate/catalog.py",
+        "test_anchor": "POST /api/catalog/refresh 后 /api/status total 变化；add_root / remove_root 不触碰源文件"
+      }
+    },
+    {
+      "id": "A_Adapters",
+      "type": "action",
+      "badge_id": "MAIN 0.8",
+      "label": "平台适配器: collect_all_sessions",
+      "subtitle": "Antigravity/Claude/WorkBuddy/Trae/豆包/Codex 归一为同一 SessionItem",
+      "stage": "S1 · 采集、平台适配与快照",
+      "col": 8,
+      "y": 500,
+      "details": {
+        "inputs": "SQLite state.vscdb / JSONL / session_memory / IndexedDB / Trae 解密库",
+        "outputs": "统一字段: catalog_id、format、session_id、title、mtime、records、bytes、tokens、file_path",
+        "code_anchor": "web_app.py:4804-5022; get_trae_sessions:2987-3426; get_doubao_sessions:3796-4083",
+        "test_anchor": "API /api/sessions?format=trae&limit=3&fields=lite；format_counts 覆盖 6 个平台"
+      }
+    },
+    {
+      "id": "F_Async",
+      "type": "fallback",
+      "badge_id": "FALLBACK 1.1",
+      "label": "降级: Trae 重解密 / 豆包云端同步后台跑",
+      "subtitle": "源库更新或云端缓存过期时先返回旧快照，完成后 invalidate + FTS 同步",
+      "stage": "S1 · 采集、平台适配与快照",
+      "col": 8,
+      "y": 660,
+      "details": {
+        "fallback_desc": "_maybe_refresh_trae_plain 每 60 秒最多触发一次；_maybe_autosync_doubao 6 小时兜底；单会话详情 120 秒过期",
+        "inputs": "Trae source database.db mtime、TRAE_PLAIN_DB、Doubao cookie cache、doubao_cloud",
+        "outputs": "tools/dbkey/out/trae_database_plain.db；cache/doubao_cloud",
+        "code_anchor": "web_app.py:561-581, 2425-2483; tools/dbkey/decrypt_trae.py; tools/doubao_sync.py",
+        "test_anchor": "MemoryTools.exe --helper trae-decrypt；/api/doubao/sync/status 查询 running 与 last_result"
+      }
+    },
+    {
+      "id": "A_Snapshot",
+      "type": "action",
+      "badge_id": "MAIN 1.2",
+      "label": "SnapshotCache: 内容指纹 + single-flight",
+      "subtitle": "roots/catalog/antigravity 目录变化才重建；最近 3 个快照供分页锁定",
+      "stage": "S1 · 采集、平台适配与快照",
+      "col": 9,
+      "y": 500,
+      "details": {
+        "inputs": "_build_snapshot_items；_sessions_fingerprint；generation",
+        "outputs": "items_full / items_lite；snapshot 令牌；cache/sessions_snapshot.json.gz",
+        "code_anchor": "services/snapshot.py:83-345; web_app.py:573-595",
+        "test_anchor": "同一参数连续请求应命中 snapshot；分页带 snapshot 不应重复或漏条"
+      }
+    },
+    {
+      "id": "A_FTS",
+      "type": "action",
+      "badge_id": "MAIN 2.1",
+      "label": "FTS5 增量索引: SessionFTSManager",
+      "subtitle": "按 mtime/size 判断过期；CJK 分词；会话标题与消息轮次写入 conversation_fts",
+      "stage": "S2 · FTS 索引、API 与缓存",
+      "col": 10,
+      "y": 500,
+      "details": {
+        "inputs": "collect_all_sessions 输出；extract_dialogue_turns_for_fts",
+        "outputs": "conversation_fts；/api/search/content 检索结果",
+        "code_anchor": "web_app.py:4506-4718, 5024-5320",
+        "test_anchor": "GET /api/search/content?q=FTS5；响应 latency_ms 与 count；索引过期时后台 sync"
+      }
+    },
+    {
+      "id": "A_API",
+      "type": "action",
+      "badge_id": "MAIN 2.2",
+      "label": "API 路由与缓存: 列表 / 详情 / 检索 / 管理",
+      "subtitle": "ETag + 304 + gzip；详情 LRU；POST migrate/delete/batch/sync",
+      "stage": "S2 · FTS 索引、API 与缓存",
+      "col": 11,
+      "y": 500,
+      "details": {
+        "inputs": "GET /api/status、/api/sessions、/api/session/detail；POST /api/catalog/refresh 等",
+        "outputs": "JSON 响应；X-Query-Ms、X-Build-Ms、X-Cache；Error 404/500",
+        "code_anchor": "web_app.py:5323-5533, 5611-6985；services/detail.py",
+        "test_anchor": "curl FTS5；重复请求用 If-None-Match 验证 304；详情 slim 与 turn_offset 分片"
+      }
+    },
+    {
+      "id": "A_UI",
+      "type": "action",
+      "badge_id": "MAIN 3.1",
+      "label": "Next.js 工作台: SWR 分页与交互",
+      "subtitle": "首屏 60 条；筛选条单行滚轮；全局检索、详情、批量、迁移、目录管理",
+      "stage": "S3 · 工作台、测试验收与发布",
+      "col": 12,
+      "y": 500,
+      "details": {
+        "inputs": "/api/status、/api/sessions?fields=lite、/api/search/content、/api/session/detail",
+        "outputs": "SessionCard、SearchModal、SessionDetailModal、BatchDrawer、RootsModal",
+        "code_anchor": "frontend/src/app/page.tsx:46-115; Toolbar.tsx:60-75; SessionCard.tsx:meta",
+        "test_anchor": "1283px Tauri 窗口：默认 4 个筛选 chip；在筛选条上滚轮向下可显 Trae/豆包/Codex"
+      }
+    },
+    {
+      "id": "H_Test",
+      "type": "human",
+      "badge_id": "ACCEPT",
+      "label": "测试实例化与验收: .testdata + 回归矩阵",
+      "subtitle": "839 条 / 豆包 374 / Trae 96 / Codex 4；GUI、检索、详情尾部、安装卸载",
+      "stage": "S3 · 工作台、测试验收与发布",
+      "col": 13,
+      "y": 500,
+      "details": {
+        "test_setup": "MEMORY_TOOLS_DATA_DIR=F:\\\\AgentsMemoryTools-Desktop\\\\.testdata；启动 agents-memory-tools-desktop.exe",
+        "api_expect": "GET /api/status → total=839；GET /api/search/content?q=FTS5 → 43/10/33",
+        "ui_cases": "筛选条滚轮；Trae 卡片日期=mtime；详情 user_uploaded_files 0 命中；单指令单回复",
+        "install_cases": "NSIS /S 安装到临时目录 → 启动 → 关闭 → uninstall /S；portable zip 解压启动",
+        "known_gap": "默认 %LOCALAPPDATA%\\\\AgentsMemoryTools 首次约 476 条；豆包云端缓存需同步，不能当作 839 验收"
+      }
+    },
+    {
+      "id": "Deliver",
+      "type": "endpoint",
+      "badge_id": "DELIVER",
+      "label": "交付: Tauri 桌面窗口 + 发布套件",
+      "subtitle": "安装包、便携包、README、SHA256；本机 127.0.0.1:18923 提供服务",
+      "stage": "S3 · 工作台、测试验收与发布",
+      "col": 14,
+      "y": 500,
+      "details": {
+        "outputs": "F:\\\\AgentsMemoryTools-Desktop\\\\release\\\\Agents Memory Tools_0.1.0_x64-setup.exe；便携 zip；SHA256SUMS.txt/json",
+        "code_anchor": "scripts/build_sidecar.ps1; scripts/build_release.ps1; src-tauri/tauri.conf.json",
+        "limits": "currentUser NSIS；无代码签名；SmartScreen 可能提示未知发布者；无自动更新"
+      }
+    },
+    {
+      "id": "A_Release",
+      "type": "artifact",
+      "badge_id": "ARTIFACT 3.2",
+      "label": "发布物料: setup + portable + 校验清单",
+      "subtitle": "安装包约 24.8 MB；便携包约 25.8 MB；README 与双份 SHA256",
+      "stage": "S3 · 工作台、测试验收与发布",
+      "col": 14,
+      "y": 660,
+      "details": {
+        "files": "release\\\\Agents Memory Tools_0.1.0_x64-setup.exe；release\\\\AgentsMemoryTools-0.1.0-portable.zip；release\\\\README.md；release\\\\SHA256SUMS.txt；release\\\\SHA256SUMS.json",
+        "build_chain": "build_sidecar.ps1 → PyInstaller onefile sidecar；cargo tauri build --bundles nsis；build_release.ps1 收集并重算 SHA",
+        "test_anchor": "安装/卸载/便携启动后检查 18923 释放；SHA256SUMS 与文件逐项一致"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_start_single",
+      "source": "Start",
+      "target": "G_Single",
+      "label": "启动入口",
+      "className": "edge-main"
+    },
+    {
+      "id": "e_single_main",
+      "source": "G_Single",
+      "target": "A_Tauri",
+      "label": "无现有实例",
+      "className": "edge-main"
+    },
+    {
+      "id": "e_single_existing",
+      "source": "G_Single",
+      "target": "F_Existing",
+      "label": "已有实例",
+      "className": "edge-fallback"
+    },
+    {
+      "id": "e_existing_ui",
+      "source": "F_Existing",
+      "target": "A_UI",
+      "label": "聚焦原窗口，复用服务",
+      "className": "edge-fallback",
+      "route": { "busY": 110 }
+    },
+    {
+      "id": "e_tauri_paths",
+      "source": "A_Tauri",
+      "target": "A_Paths",
+      "label": "注入父 PID 后解析路径",
+      "className": "edge-main"
+    },
+    {
+      "id": "e_paths_bind",
+      "source": "A_Paths",
+      "target": "G_Bind",
+      "label": "DATA_DIR / RESOURCE_DIR 就绪",
+      "className": "edge-main"
+    },
+    {
+      "id": "e_bind_http",
+      "source": "G_Bind",
+      "target": "A_HTTP",
+      "label": "锁 + 18923 绑定成功",
+      "className": "edge-main"
+    },
+    {
+      "id": "e_bind_block",
+      "source": "G_Bind",
+      "target": "X_Bind",
+      "label": "OSError / 端口冲突",
+      "className": "edge-block"
+    },
+    {
+      "id": "e_http_warm",
+      "source": "A_HTTP",
+      "target": "A_Warm",
+      "label": "serve_forever 启动后预热",
+      "className": "edge-main"
+    },
+    {
+      "id": "e_warm_catalog",
+      "source": "A_Warm",
+      "target": "A_Catalog",
+      "label": "快照命中 / 后台重建",
+      "className": "edge-main"
+    },
+    {
+      "id": "e_catalog_adapters",
+      "source": "A_Catalog",
+      "target": "A_Adapters",
+      "label": "roots + catalog 行",
+      "className": "edge-main"
+    },
+    {
+      "id": "e_adapters_snapshot",
+      "source": "A_Adapters",
+      "target": "A_Snapshot",
+      "label": "统一 SessionItem",
+      "className": "edge-main"
+    },
+    {
+      "id": "e_adapters_async",
+      "source": "A_Adapters",
+      "target": "F_Async",
+      "label": "Trae 源库更新 / 豆包缓存过期",
+      "className": "edge-fallback"
+    },
+    {
+      "id": "e_async_snapshot",
+      "source": "F_Async",
+      "target": "A_Snapshot",
+      "label": "helper 完成 → invalidate + 重建",
+      "className": "edge-artifact"
+    },
+    {
+      "id": "e_snapshot_fts",
+      "source": "A_Snapshot",
+      "target": "A_FTS",
+      "label": "快照条目进入轮次抽取",
+      "className": "edge-main"
+    },
+    {
+      "id": "e_fts_api",
+      "source": "A_FTS",
+      "target": "A_API",
+      "label": "conversation_fts 就绪",
+      "className": "edge-main"
+    },
+    {
+      "id": "e_api_ui",
+      "source": "A_API",
+      "target": "A_UI",
+      "label": "JSON + ETag / 304",
+      "className": "edge-main"
+    },
+    {
+      "id": "e_ui_test",
+      "source": "A_UI",
+      "target": "H_Test",
+      "label": "实机 GUI / API 验收",
+      "className": "edge-main"
+    },
+    {
+      "id": "e_test_deliver",
+      "source": "H_Test",
+      "target": "Deliver",
+      "label": "回归通过",
+      "className": "edge-success"
+    },
+    {
+      "id": "e_deliver_release",
+      "source": "Deliver",
+      "target": "A_Release",
+      "label": "生成安装包 / 便携包 / SHA",
+      "className": "edge-artifact"
+    }
+  ]
+}

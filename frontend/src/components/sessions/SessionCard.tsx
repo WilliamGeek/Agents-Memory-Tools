@@ -48,15 +48,28 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
 
   const meta = platformMeta(session.format);
   const recorded = session.usageSource === 'recorded';
-  const tokenLabel = `${recorded ? '' : '≈ '}${formatTokens(session.tokens)} Tokens`;
+  // “最近活跃”按 mtime 排序；卡片右上角显示同一时间基准，
+  // 避免标题里的原始日期与排序结果看起来互相矛盾。
+  const displayTime = session.mtime || session.startedAt;
+  const tokenLabel = recorded
+    ? `${formatTokens(session.tokens)} 累计 Tokens`
+    : `≈ ${formatTokens(session.tokens)} Tokens`;
+  const cacheHitPct =
+    recorded && session.inputTokens > 0
+      ? Math.round((session.cacheReadTokens / session.inputTokens) * 100)
+      : 0;
+  const freshTokens = session.freshTokens || session.cacheMissTokens + session.outputTokens;
   const tokenTip = recorded
     ? [
         '真实用量（客户端自身记录）',
-        `• 计费总量: ${session.tokens.toLocaleString()} Tokens`,
-        `• 输入（上下文累计）: ${session.inputTokens.toLocaleString()} Tokens`,
-        `• 输出（含思考）: ${session.outputTokens.toLocaleString()} Tokens`,
-        `• 思考: ${session.thoughtsTokens.toLocaleString()} Tokens`,
-        `• 内容体积（去重）: ${session.contentTokens.toLocaleString()} Tokens`,
+        `• 累计 Token（含缓存命中）: ${session.tokens.toLocaleString()}`,
+        `• 输入（上下文累计）: ${session.inputTokens.toLocaleString()}`,
+        `• 缓存命中（重复上下文）: ${session.cacheReadTokens.toLocaleString()} (${cacheHitPct}%)`,
+        `• 缓存未命中（新输入）: ${session.cacheMissTokens.toLocaleString()}`,
+        `• 有效总量（未命中 + 输出）: ${freshTokens.toLocaleString()}`,
+        `• 输出（含思考）: ${session.outputTokens.toLocaleString()}`,
+        `• 思考: ${session.thoughtsTokens.toLocaleString()}`,
+        `• 内容体积（去重）: ${session.contentTokens.toLocaleString()}`,
       ].join(NL)
     : [
         '估算用量（客户端未记录，按内容体积分词）',
@@ -217,7 +230,7 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
 
         <div className="flex items-center gap-1 shrink-0">
           <time className="tnum text-[10.5px] text-ink-faint">
-            {formatDateTime(session.startedAt)}
+            {formatDateTime(displayTime)}
           </time>
         </div>
       </div>
@@ -351,7 +364,10 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
                         <span className="text-line-strong">·</span>
                         <span>{formatBytes(child.bytes)}</span>
                         <span className="text-line-strong">·</span>
-                        <span className="text-warn">{formatTokens(child.tokens)}</span>
+                        <span className="text-warn">
+                          {child.usageSource === 'recorded' ? '累计 ' : ''}
+                          {formatTokens(child.tokens)}
+                        </span>
                       </div>
 
                       <div className="flex items-center gap-1 shrink-0">

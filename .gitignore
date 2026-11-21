@@ -24,6 +24,7 @@ token_cache.json
 .idea/
 .DS_Store
 Thumbs.db
+*.lnk
 
 # 本轮改造产生的临时产物
 .tmp/
@@ -44,3 +45,14 @@ backup/
 logs/
 tools/dbkey/
 dbg.py
+
+# 构建产物与本地测试数据（不入库）
+dist/
+build/
+release/
+.testdata/
+.toolchain/
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+frontend/tsconfig.tsbuildinfo

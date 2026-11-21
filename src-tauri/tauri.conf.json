@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Agents Memory Tools",
+  "version": "0.1.0",
+  "identifier": "com.agentsmemory.tools.desktop",
+  "build": {
+    "frontendDist": "launcher"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Agents Memory Tools · 跨智能体会话记忆工作台",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 640,
+        "center": true,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "externalBin": ["binaries/memory-tools"],
+    "resources": ["launcher/*"],
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "shortDescription": "跨智能体会话记忆管理与检索桌面工具",
+    "longDescription": "Agents Memory Tools 的 Tauri 2 桌面外壳；Python sidecar 负责本地 HTTP 服务与数据读取。所有数据仅在本机处理，服务仅绑定 127.0.0.1。",
+    "copyright": "Copyright © 2026 Agents Memory Tools",
+    "category": "Productivity",
+    "publisher": "Agents Memory Tools",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "languages": ["SimpChinese", "English"]
+      }
+    }
+  }
+}

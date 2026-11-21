@@ -49,6 +49,9 @@ export interface SessionChild {
   format: string;
   agentName: string;
   isChild: boolean;
+  usageSource?: string;
+  cacheReadTokens?: number;
+  cacheMissTokens?: number;
   filePath?: string;
 }
 
@@ -67,6 +70,9 @@ export interface SessionItem {
   outputTokens: number;
   thoughtsTokens: number;
   contentTokens: number;
+  cacheReadTokens: number;
+  cacheMissTokens: number;
+  freshTokens: number;
   usageSource: string;
   filePath: string;
   exists: boolean;
@@ -212,5 +218,7 @@ export interface SessionListResponse extends SessionListMeta {
   stats?: {
     bytes: number;
     tokens: number;
+    topLevelTotal?: number;
+    childTotal?: number;
   };
 }
