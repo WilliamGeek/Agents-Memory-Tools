@@ -50,6 +50,7 @@ dbg.py
 dist/
 build/
 release/
+BUILD_INFO.json
 .testdata/
 .toolchain/
 frontend/.next/
