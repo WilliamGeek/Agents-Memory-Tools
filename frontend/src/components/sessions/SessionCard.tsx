@@ -27,6 +27,7 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
     selectedCatalogIds,
     toggleSelectSession,
     openSessionDetail: openDetail,
+    sortField,
   } = useStore();
   const [childrenOpen, setChildrenOpen] = useState(false);
   const [fetchedChildren, setFetchedChildren] = useState<SessionChild[] | null>(null);
@@ -48,9 +49,13 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
 
   const meta = platformMeta(session.format);
   const recorded = session.usageSource === 'recorded';
-  // “最近活跃”按 mtime 排序；卡片右上角显示同一时间基准，
-  // 避免标题里的原始日期与排序结果看起来互相矛盾。
-  const displayTime = session.mtime || session.startedAt;
+  // 卡片时间必须跟当前排序口径一致：选“最近活跃”显示 mtime，
+  // 选“创建时间”显示 startedAt；否则排序和卡片会像两个字段反了。
+  const sortByCreated = sortField === 'started_at';
+  const displayTime = sortByCreated
+    ? session.startedAt || session.mtime
+    : session.mtime || session.startedAt;
+  const displayTimeLabel = sortByCreated ? '创建时间' : '最近活跃';
   const tokenLabel = recorded
     ? `${formatTokens(session.tokens)} 累计 Tokens`
     : `≈ ${formatTokens(session.tokens)} Tokens`;
@@ -229,7 +234,11 @@ export function SessionCard({ session, onChanged }: { session: SessionItem; onCh
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
-          <time className="tnum text-[10.5px] text-ink-faint">
+          <time
+            className="tnum text-[10.5px] text-ink-faint"
+            title={`${displayTimeLabel} · ${formatDateTime(displayTime)}`}
+            aria-label={`${displayTimeLabel} ${formatDateTime(displayTime)}`}
+          >
             {formatDateTime(displayTime)}
           </time>
         </div>

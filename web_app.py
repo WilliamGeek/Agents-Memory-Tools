@@ -4060,6 +4060,131 @@ def _doubao_epoch(value: Any) -> int:
     return int(v) if v > 0 else 0
 
 
+_DOUBAO_ASSIGN_TURN_RE = re.compile(
+    r"^##\s*\[([^\]]+)\]\s*需求\s*\n(.*?)(?=^##\s*\[|\Z)",
+    re.M | re.S,
+)
+
+
+def _doubao_local_epoch(value: Any) -> int:
+    """把本地可读时间（YYYY-MM-DD HH:MM:SS）转成 epoch 秒。"""
+    s = str(value or "").strip()
+    if not s:
+        return 0
+    try:
+        return int(datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S").timestamp())
+    except Exception:
+        return 0
+
+
+def _doubao_assignment_turns(path: Path) -> list[dict[str, str]]:
+    """读取 assignment.md 里的 append-only 用户需求。
+
+    豆包 Agent Mode 的 trajectory.jsonl 只记录执行侧（assistant/tool），真正的
+    用户指令按 turn 追加在 ``agents/<id>/system/assignment.md``。列表标题和详情
+    用户消息都必须以这里为准，否则会出现“只有回复、没有用户指令”的会话。
+    """
+    if not path.exists():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return []
+    turns: list[dict[str, str]] = []
+    for m in _DOUBAO_ASSIGN_TURN_RE.finditer(text):
+        ts = _ag_local_time_str(m.group(1).strip())
+        body = m.group(2).strip()
+        if body:
+            turns.append({"timestamp": ts, "text": body})
+    return turns
+
+
+def _doubao_norm_path(value: Any) -> str:
+    return str(value or "").replace("/", "\\").replace("\\\\", "\\").lower().rstrip("\\")
+
+
+def _doubao_tool_arg_paths(args: Any) -> list[str]:
+    """从工具调用参数里取出可能指向工作区的路径，兼容字符串 JSON。"""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            return []
+    if not isinstance(args, dict):
+        return []
+    out: list[str] = []
+    for key in ("file_path", "path", "notebook_path", "source", "cwd"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            out.append(val.strip())
+    artifacts = args.get("artifacts")
+    if isinstance(artifacts, list):
+        for item in artifacts:
+            if isinstance(item, dict):
+                val = item.get("source") or item.get("path")
+                if isinstance(val, str) and val.strip():
+                    out.append(val.strip())
+    return out
+
+
+def _doubao_collect_workspaces(user_home: Path) -> list[dict[str, Any]]:
+    """枚举 ``~\u005cDoubao\u005cchats\u005cYYYY-MM-DD\u005cnew-chat-*`` 工作区产物目录。"""
+    chats_root = user_home / "Doubao" / "chats"
+    if not chats_root.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    for date_dir in sorted(chats_root.iterdir()):
+        if not date_dir.is_dir():
+            continue
+        for chat_dir in sorted(date_dir.iterdir()):
+            if not chat_dir.is_dir():
+                continue
+            files_in_dir = [p for p in sorted(chat_dir.rglob("*")) if p.is_file()]
+            if not files_in_dir:
+                continue
+            try:
+                latest_mtime = max(p.stat().st_mtime for p in files_in_dir)
+            except OSError:
+                continue
+            try:
+                created_ts = int(
+                    datetime.strptime(date_dir.name, "%Y-%m-%d").timestamp()
+                )
+            except ValueError:
+                created_ts = int(min(p.stat().st_mtime for p in files_in_dir))
+            primary = next((p for p in files_in_dir if p.suffix.lower() == ".md"), files_in_dir[0])
+            total_bytes = sum(p.stat().st_size for p in files_in_dir)
+            out.append({
+                "path": chat_dir,
+                "title": f"{date_dir.name} · {primary.stem}",
+                "created_at": created_ts,
+                "last_active": latest_mtime,
+                "records": len(files_in_dir),
+                "bytes": total_bytes,
+                "files": files_in_dir,
+            })
+    return out
+
+
+def _doubao_merge_workspace(target: dict[str, Any], ws: dict[str, Any]) -> None:
+    """把一个工作区产物目录并进同源的 Agent/云端会话，保留产物标题与活跃时间。"""
+    target["title"] = str(ws.get("title") or target.get("title") or "")
+    target["workspace"] = str(ws.get("path") or "")
+    target["mtime"] = max(
+        float(target.get("mtime") or 0), float(ws.get("last_active") or 0)
+    )
+    target["last_active"] = max(
+        int(target.get("last_active") or 0), int(ws.get("last_active") or 0)
+    )
+    target["bytes"] = max(int(target.get("bytes") or 0), int(ws.get("bytes") or 0))
+    merged_files = list(target.get("all_files") or [])
+    for p in (ws.get("files") or [])[:20]:
+        sp = str(p)
+        if sp not in merged_files:
+            merged_files.append(sp)
+    target["all_files"] = merged_files
+
+
 def get_doubao_sessions() -> list[dict[str, Any]]:
     """扫描本地豆包（Doubao）会话：Agent Mode 轨迹、Coding 快照与工作区产物。"""
     results: list[dict[str, Any]] = []
@@ -4070,22 +4195,25 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
 
     doubao_user_data = local_app / "Doubao" / "User Data"
     idb_data = doubao_idb.load(doubao_user_data)
-    idb_mtime = 0.0
-    for idb_dir in doubao_idb.leveldb_dirs(doubao_user_data):
-        for p in idb_dir.glob("*"):
-            if p.is_file():
-                try:
-                    idb_mtime = max(idb_mtime, p.stat().st_mtime)
-                except OSError:
-                    continue
 
     # 1. Doubao Agent Mode: trajectory.jsonl + assignment.md
-    agent_sessions_dir = local_app / "Doubao" / "User Data" / "Default" / ".doubao" / "agent_mode" / "workspace" / ".sessions"
-    if agent_sessions_dir.exists():
+    #    必须遍历所有 profile（Default / Profile 1 ...）。只扫 Default 会漏掉
+    #    绝大多数近期会话，列表里就只剩工作区产物，看起来像“没有用户指令”。
+    workspaces = _doubao_collect_workspaces(user_home)
+    workspace_by_norm = {_doubao_norm_path(ws["path"]): ws for ws in workspaces}
+    agent_workspace_sid: dict[str, str] = {}
+    agent_sessions_roots = sorted(
+        doubao_user_data.glob("*/.doubao/agent_mode/workspace/.sessions")
+    )
+    for agent_sessions_dir in agent_sessions_roots:
+        if not agent_sessions_dir.exists():
+            continue
         for sess_dir in sorted(agent_sessions_dir.iterdir()):
             if not sess_dir.is_dir():
                 continue
             sid = sess_dir.name
+            if sid in seen_sids:
+                continue
             agents_dir = sess_dir / "agents"
             if not agents_dir.exists():
                 continue
@@ -4097,10 +4225,27 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
                 except OSError:
                     continue
                 assign_path = traj.parent / "assignment.md"
-                started_at = ""
-                title = ""
+                assign_turns = _doubao_assignment_turns(assign_path)
+                created_raw = ""
+                if assign_path.exists():
+                    try:
+                        assign_txt = assign_path.read_text(encoding="utf-8", errors="ignore")
+                        m_ts = re.search(r"Created:\s*([0-9T:\-.Z]+)", assign_txt) or re.search(
+                            r"##\s*\[([0-9T:\-.Z]+)\]", assign_txt
+                        )
+                        if m_ts:
+                            created_raw = m_ts.group(1)
+                    except Exception:
+                        pass
+                started_at = _ag_local_time_str(created_raw)
+                if not started_at and assign_turns:
+                    started_at = assign_turns[0].get("timestamp") or ""
+                if not started_at:
+                    started_at = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+
                 records = 0
-                first_user_text = ""
+                first_traj_user = ""
+                workspace_counts: dict[str, list[int]] = {}
                 try:
                     with open(traj, "r", encoding="utf-8", errors="ignore") as f:
                         for line in f:
@@ -4108,32 +4253,57 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
                             if not line:
                                 continue
                             records += 1
-                            if not first_user_text:
-                                try:
-                                    obj = json.loads(line)
-                                    if obj.get("role") == "user":
-                                        c = obj.get("content")
-                                        if isinstance(c, str) and c.strip():
-                                            first_user_text = c.strip()
-                                except Exception:
-                                    pass
+                            try:
+                                obj = json.loads(line)
+                            except Exception:
+                                continue
+                            if not first_traj_user and obj.get("role") == "user":
+                                c = obj.get("content")
+                                if isinstance(c, str) and c.strip():
+                                    first_traj_user = c.strip()
+                                elif isinstance(c, list):
+                                    for block in c:
+                                        if isinstance(block, dict) and block.get("type") == "text":
+                                            t = str(block.get("text") or "").strip()
+                                            if t:
+                                                first_traj_user = t
+                                                break
+                            for tc in obj.get("tool_calls") or []:
+                                fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                                name = str(fn.get("name") or "")
+                                for value in _doubao_tool_arg_paths(fn.get("arguments")):
+                                    vnorm = _doubao_norm_path(value)
+                                    for wnorm, ws in workspace_by_norm.items():
+                                        if vnorm == wnorm or vnorm.startswith(wnorm + "\\"):
+                                            bucket = workspace_counts.setdefault(
+                                                str(ws["path"]), [0, 0]
+                                            )
+                                            if name in {"Write", "Edit", "present_files", "NotebookEdit"}:
+                                                bucket[0] += 1
+                                            elif name in {"Read", "Glob", "Grep"}:
+                                                bucket[1] += 1
                 except Exception:
                     continue
 
-                if assign_path.exists():
-                    try:
-                        assign_txt = assign_path.read_text(encoding="utf-8", errors="ignore")
-                        m_ts = re.search(r"Created:\s*([0-9T:\-.Z]+)", assign_txt) or re.search(r"##\s*\[([0-9T:\-.Z]+)\]", assign_txt)
-                        if m_ts:
-                            started_at = _ag_local_time_str(m_ts.group(1))
-                    except Exception:
-                        pass
+                if workspace_counts:
+                    best_ws_path = max(
+                        workspace_counts.items(),
+                        key=lambda kv: (kv[1][0], kv[1][1]),
+                    )[0]
+                    if workspace_counts[best_ws_path][0] > 0:
+                        agent_workspace_sid[_doubao_norm_path(best_ws_path)] = sid
 
-                if not started_at:
-                    started_at = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                first_user_text = (
+                    assign_turns[0].get("text") if assign_turns else first_traj_user
+                )
                 title = _doubao_clean_prompt_title(first_user_text) or f"豆包 Agent 会话 ({sid[:8]})"
                 total_bytes = st.st_size + (assign_path.stat().st_size if assign_path.exists() else 0)
-                tok = compute_session_tokens("doubao", sid, traj, st.st_mtime, total_bytes)
+                created_ts = _doubao_local_epoch(started_at)
+                last_ts = max(
+                    st.st_mtime,
+                    assign_path.stat().st_mtime if assign_path.exists() else 0,
+                )
+                tok = compute_session_tokens("doubao", sid, traj, last_ts, total_bytes)
                 seen_sids.add(sid)
                 results.append({
                     "catalog_id": f"db_{sid[:16]}",
@@ -4141,10 +4311,13 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
                     "session_id": sid,
                     "title": title,
                     "started_at": started_at,
-                    "records": max(1, records),
+                    "created_at": created_ts,
+                    "last_active": last_ts,
+                    "records": max(1, records + len(assign_turns)),
                     "bytes": total_bytes,
                     **_token_fields(tok),
                     "file_path": str(traj),
+                    "trajectory_path": str(traj),
                     "all_files": [str(traj)] + ([str(assign_path)] if assign_path.exists() else []),
                     "account": "",
                     "model": "",
@@ -4152,7 +4325,7 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
                     "workspace": "",
                     "source_kind": "agent_mode",
                     "exists": True,
-                    "mtime": st.st_mtime,
+                    "mtime": last_ts,
                 })
                 break
 
@@ -4175,6 +4348,7 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
             files_list = data.get("files") if isinstance(data.get("files"), list) else []
             started_raw = str(exe.get("startedAtFormatted") or "").replace("/", "-").strip()
             started_at = started_raw or datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            created_ts = _doubao_local_epoch(started_at) or int(st.st_mtime)
             title = f"豆包 Coding ({cid[-8:]}) · {len(files_list)} 个文件快照"
             tok = compute_session_tokens("doubao", cid, snap_file, st.st_mtime, st.st_size)
             results.append({
@@ -4183,6 +4357,8 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
                 "session_id": cid,
                 "title": title,
                 "started_at": started_at,
+                "created_at": created_ts,
+                "last_active": st.st_mtime,
                 "records": max(1, len(files_list)),
                 "bytes": st.st_size,
                 **_token_fields(tok),
@@ -4198,47 +4374,8 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
             })
 
     # 3. Doubao Chats Workspace artifacts
-    chats_root = user_home / "Doubao" / "chats"
-    if chats_root.exists():
-        for date_dir in sorted(chats_root.iterdir()):
-            if not date_dir.is_dir():
-                continue
-            for chat_dir in sorted(date_dir.iterdir()):
-                if not chat_dir.is_dir():
-                    continue
-                files_in_dir = [p for p in sorted(chat_dir.rglob("*")) if p.is_file()]
-                if not files_in_dir:
-                    continue
-                rel = f"{date_dir.name}/{chat_dir.name}"
-                sid = f"chat_{hashlib.md5(rel.encode('utf-8')).hexdigest()[:12]}"
-                if sid in seen_sids:
-                    continue
-                seen_sids.add(sid)
-                total_bytes = sum(p.stat().st_size for p in files_in_dir)
-                latest_mtime = max(p.stat().st_mtime for p in files_in_dir)
-                started_at = datetime.fromtimestamp(latest_mtime).strftime("%Y-%m-%d %H:%M:%S")
-                primary = next((p for p in files_in_dir if p.suffix.lower() == ".md"), files_in_dir[0])
-                title = f"{date_dir.name} · {primary.stem}"
-                tok = compute_session_tokens("doubao", sid, primary, latest_mtime, total_bytes)
-                results.append({
-                    "catalog_id": f"db_{sid[:16]}",
-                    "format": "doubao",
-                    "session_id": sid,
-                    "title": title,
-                    "started_at": started_at,
-                    "records": len(files_in_dir),
-                    "bytes": total_bytes,
-                    **_token_fields(tok),
-                    "file_path": str(chat_dir),
-                    "all_files": [str(p) for p in files_in_dir[:20]],
-                    "account": "",
-                    "model": "",
-                    "mode": "chat_workspace",
-                    "workspace": str(chat_dir),
-                    "source_kind": "chat_workspace",
-                    "exists": True,
-                    "mtime": latest_mtime,
-                })
+    #    工作区目录不再直接当作独立会话丢进列表；先与同源 Agent/云端会话合并，
+    #    找不到同源会话时才作为“仅产物”会话兜底（见函数末尾）。
 
     # 4. 豆包云端同步仓（完整会话正文；优先于本地 IndexedDB 元数据）
     cloud_data = doubao_cloud.load()
@@ -4257,6 +4394,8 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
             continue
         # 云端正文优先：同 cid 的 Coding Snapshot / Agent Mode 摘要不再重复展示
         prev = next((r for r in results if str(r.get("session_id")) == cid), None)
+        prev_created = int(prev.get("created_at") or 0) if prev is not None else 0
+        prev_last = float(prev.get("last_active") or 0) if prev is not None else 0.0
         if prev is not None:
             try:
                 results.remove(prev)
@@ -4264,9 +4403,15 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
                 pass
         seen_sids.add(cid)
         idb_item = idb_data.get(cid) or {}
-        last_ts = max(
+        # 云端会话的“最近活跃”以云端最后一条消息/会话更新时间为准。
+        # IndexedDB 里的 last_active 会被“仅在豆包 UI 打开过该会话”刷新，
+        # 不能拿它覆盖云端时间，否则旧会话会突然跳到最近活跃榜首。
+        cloud_last_ts = max(
             _doubao_epoch(item.get("last_active")),
             _doubao_epoch(item.get("ts")),
+            prev_last,
+        )
+        last_ts = cloud_last_ts or max(
             _doubao_epoch(idb_item.get("last_active")),
             _doubao_epoch(idb_item.get("ts")),
         )
@@ -4279,14 +4424,13 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
             default=0,
         )
         created_ts = (
-            _doubao_epoch(item.get("created_at"))
+            prev_created
+            or _doubao_epoch(item.get("created_at"))
             or _doubao_epoch(idb_item.get("created_at"))
             or _doubao_epoch(idb_item.get("ts"))
             or first_msg_ts
             or last_ts
         )
-        if idb_item.get("active"):
-            last_ts = max(last_ts, _doubao_epoch(idb_mtime))
         last_ts = last_ts or created_ts
         started_at = datetime.fromtimestamp(created_ts).strftime("%Y-%m-%d %H:%M:%S") if created_ts else ""
         title = str(item.get("title") or f"豆包对话 ({cid[-8:]})")
@@ -4349,9 +4493,7 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
         seen_sids.add(cid)
         last_ts = _doubao_epoch(item.get("last_active") or item.get("ts"))
         created_ts = _doubao_epoch(item.get("created_at")) or last_ts
-        if item.get("active"):
-            last_ts = max(last_ts, _doubao_epoch(idb_mtime))
-        last_ts = last_ts or _doubao_epoch(idb_mtime)
+        last_ts = last_ts or created_ts
         created_ts = created_ts or last_ts
         started_at = datetime.fromtimestamp(created_ts).strftime("%Y-%m-%d %H:%M:%S") if created_ts else ""
         title = item.get("title") or f"豆包对话 ({cid[-8:]})"
@@ -4380,6 +4522,66 @@ def get_doubao_sessions() -> list[dict[str, Any]]:
             "mtime": last_ts,
         })
 
+    # 6. 合并工作区产物目录
+    #    Agent Mode 的 trajectory 里有大量 Write/Edit/present_files 调用，直接指向
+    #    ~\Doubao\chats\... 下的产物目录。按这些真实写入路径把工作区并回同源会话，
+    #    标题保留产物名，正文/用户指令仍走云端或 assignment.md。
+    by_sid = {str(r.get("session_id") or ""): r for r in results if r.get("format") == "doubao"}
+    unlinked_workspaces: list[dict[str, Any]] = []
+    for ws in workspaces:
+        wnorm = _doubao_norm_path(ws.get("path"))
+        target = by_sid.get(agent_workspace_sid.get(wnorm, ""))
+        if target is None:
+            # 没有精确写入轨迹时，退回云端正文里的绝对路径引用（老会话兼容）。
+            cloud_sid = ""
+            for cid, item in cloud_data.items():
+                for m in item.get("messages") or []:
+                    text = _doubao_norm_path(m.get("text") or "")
+                    if wnorm and wnorm in text:
+                        cloud_sid = str(cid)
+                        break
+                if cloud_sid:
+                    break
+            target = by_sid.get(cloud_sid)
+        if target is not None:
+            _doubao_merge_workspace(target, ws)
+        else:
+            unlinked_workspaces.append(ws)
+
+    for ws in unlinked_workspaces:
+        rel = f"{ws['path'].parent.name}/{ws['path'].name}"
+        sid = f"chat_{hashlib.md5(rel.encode('utf-8')).hexdigest()[:12]}"
+        if sid in seen_sids:
+            continue
+        seen_sids.add(sid)
+        primary = next((p for p in ws["files"] if p.suffix.lower() == ".md"), ws["files"][0])
+        tok = compute_session_tokens(
+            "doubao", sid, primary, float(ws["last_active"]), int(ws["bytes"])
+        )
+        results.append({
+            "catalog_id": f"db_{sid[:16]}",
+            "format": "doubao",
+            "session_id": sid,
+            "title": ws["title"],
+            "started_at": datetime.fromtimestamp(int(ws["created_at"])).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
+            "created_at": int(ws["created_at"]),
+            "last_active": ws["last_active"],
+            "records": int(ws["records"]),
+            "bytes": int(ws["bytes"]),
+            **_token_fields(tok),
+            "file_path": str(ws["path"]),
+            "all_files": [str(p) for p in ws["files"][:20]],
+            "account": "",
+            "model": "",
+            "mode": "chat_workspace",
+            "workspace": str(ws["path"]),
+            "source_kind": "chat_workspace",
+            "exists": True,
+            "mtime": ws["last_active"],
+        })
+
     return results
 
 
@@ -4392,7 +4594,7 @@ def get_doubao_session_messages(session_match: dict[str, Any]) -> list[dict[str,
     # 云端完整正文，否则会出现「列表显示已同步，详情仍只有 3 条」的假象。
     if source_kind == "indexeddb" and doubao_cloud.get(cid).get("messages"):
         source_kind = "cloud"
-    fp = Path(str(session_match.get("file_path") or ""))
+    fp = Path(str(session_match.get("trajectory_path") or session_match.get("file_path") or ""))
     started_at = str(session_match.get("started_at") or "")
 
     if source_kind == "cloud":
@@ -4476,6 +4678,24 @@ def get_doubao_session_messages(session_match: dict[str, Any]) -> list[dict[str,
         return events
 
     if source_kind == "agent_mode" and fp.exists():
+        assign_path = fp.parent / "assignment.md"
+        assign_turns = _doubao_assignment_turns(assign_path)
+        seen_user_texts: set[str] = set()
+        for turn in assign_turns:
+            text = str(turn.get("text") or "").strip()
+            if not text:
+                continue
+            clean_user = re.sub(r"\[([^\]]+)\]\(<[^>]+>\)", r"[\1]", text)
+            seen_user_texts.add(clean_user)
+            events.append({
+                "kind": "message",
+                "role": "user",
+                "timestamp": str(turn.get("timestamp") or started_at),
+                "text": clean_user,
+                "tool_name": "",
+                "tool_call_id": "",
+                "payload": None,
+            })
         with open(fp, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
                 line = line.strip()
@@ -4490,15 +4710,17 @@ def get_doubao_session_messages(session_match: dict[str, Any]) -> list[dict[str,
                 text = content if isinstance(content, str) else (json.dumps(content, ensure_ascii=False) if content else "")
                 if role == "user" and text.strip():
                     clean_user = re.sub(r"\[([^\]]+)\]\(<[^>]+>\)", r"[\1]", text.strip())
-                    events.append({
-                        "kind": "message",
-                        "role": "user",
-                        "timestamp": started_at,
-                        "text": clean_user,
-                        "tool_name": "",
-                        "tool_call_id": "",
-                        "payload": None,
-                    })
+                    if clean_user not in seen_user_texts:
+                        seen_user_texts.add(clean_user)
+                        events.append({
+                            "kind": "message",
+                            "role": "user",
+                            "timestamp": started_at,
+                            "text": clean_user,
+                            "tool_name": "",
+                            "tool_call_id": "",
+                            "payload": None,
+                        })
                 elif role == "assistant":
                     if text.strip():
                         events.append({
