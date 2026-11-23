@@ -85,3 +85,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify_parity.ps1
 `F:\Agent会话记忆管理与迁移` 是旧版网页源码快照，不再作为第二套维护源。它的核心兼容修复已经进入当前源码，但文件不是逐文件相同。
 
 以后只改 `D:\AgentsMemoryTools`。旧目录可以作为归档保留，确认没有独有数据后再删除。
+
+## 2026-11-23 迁移记录
+
+- `F:\Agent会话记忆管理与迁移` 的旧 Git HEAD 为 `671470a`，D 盘源码已更新到当前 `main` 分支。
+- 旧网页缓存中有 371 条豆包云端会话；D 盘 exe 的共享 AppData 中有 438 条，且旧缓存没有一条是 AppData 中不存在的，说明新数据是旧数据的超集。
+- 因此没有把旧 `cache` 覆盖到新数据目录，避免用 11 月 19 日的旧快照回退 11 月 23 日的缓存。
+- `D:\Agent会话记忆管理与迁移` 是指向 `D:\AgentsMemoryTools` 的 junction，不是第二份源码。
