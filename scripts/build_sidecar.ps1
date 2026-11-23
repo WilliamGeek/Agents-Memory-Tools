@@ -20,8 +20,8 @@ $Python = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $Python)) {
     throw "未找到虚拟环境 Python: $Python"
 }
-$PyInstaller = Join-Path $Root ".venv\Scripts\pyinstaller.exe"
-if (-not (Test-Path -LiteralPath $PyInstaller)) {
+$PyInstallerCheck = & $Python -c "import PyInstaller; print(PyInstaller.__version__)" 2>$null
+if ($LASTEXITCODE -ne 0) {
     throw "未安装 PyInstaller。请先执行: $Python -m pip install pyinstaller"
 }
 if (-not (Test-Path -LiteralPath (Join-Path $Root "frontend\out\index.html"))) {
@@ -51,7 +51,7 @@ $PyArgs = @(
     "web_app.py"
 )
 
-& $PyInstaller @PyArgs
+& $Python -m PyInstaller @PyArgs
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller 失败，退出码 $LASTEXITCODE"
 }
