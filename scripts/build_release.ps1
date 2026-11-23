@@ -1,4 +1,4 @@
-# 一键构建并收集 Windows 发布套件
+﻿# 一键构建并收集 Windows 发布套件
 #
 # 前置：已安装 .venv、PyInstaller、Rust MSVC、Tauri CLI。
 # 用法：powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1
