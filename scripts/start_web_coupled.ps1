@@ -1,5 +1,6 @@
 ﻿param(
-    [int]$WaitSeconds = 30
+    [int]$WaitSeconds = 30,
+    [switch]$NoBrowser
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,8 +33,10 @@ function Wait-Api {
 
 function Open-Web {
     param([string]$Url)
-    Start-Process -FilePath $Url
-    Write-Host "已打开网页版：$Url"
+    if (-not $NoBrowser) {
+        Start-Process -FilePath $Url
+    }
+    Write-Host "网页版地址：$Url"
 }
 
 Write-Host 'Agents Memory Tools - 网页版启动器'
