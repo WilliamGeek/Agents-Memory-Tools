@@ -92,3 +92,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify_parity.ps1
 - 旧网页缓存中有 371 条豆包云端会话；D 盘 exe 的共享 AppData 中有 438 条，且旧缓存没有一条是 AppData 中不存在的，说明新数据是旧数据的超集。
 - 因此没有把旧 `cache` 覆盖到新数据目录，避免用 11 月 19 日的旧快照回退 11 月 23 日的缓存。
 - `D:\Agent会话记忆管理与迁移` 是指向 `D:\AgentsMemoryTools` 的 junction，不是第二份源码。
+
+### 虚拟环境
+
+D 盘 `.venv` 已从基础 Python 重建并把依赖迁入，`Scripts` 里不再有指向 `F:\AgentsMemoryTools-Desktop` 的旧启动器。日常统一用 `python -m pip` 和 `python -m PyInstaller`，不要依赖旧目录的 `.exe` 包装器。
